@@ -79,12 +79,3 @@ cmake -B build_debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
 cmake --build build_debug
 ./build_debug/tests    # run tests
 ```
-
-## Publish on GitHub
-1. Create a new repository on [GitHub](https://github.com/new) (no README, no .gitignore).
-2. Add the remote and push:
-   ```bash
-   git remote add origin https://github.com/YOUR_USERNAME/neural_implementation.git
-   git push -u origin main
-   ```
-   Use your repo URL if you chose a different name.
