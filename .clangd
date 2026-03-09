@@ -1,0 +1,6 @@
+CompileFlags:
+  CompilationDatabase: build_debug
+
+# Use project .clang-format (includes space inside parentheses)
+Format:
+  Style: file

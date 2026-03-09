@@ -1,0 +1,25 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build debug",
+			"type": "shell",
+			"command": "ninja",
+			"options": {
+				"cwd": "${workspaceFolder}/build_debug"
+			},
+			"group": "build",
+			"problemMatcher": ["$gcc"]
+		},
+		{
+			"label": "Build release",
+			"type": "shell",
+			"command": "ninja",
+			"options": {
+				"cwd": "${workspaceFolder}/build_release"
+			},
+			"group": "build",
+			"problemMatcher": ["$gcc"]
+		}
+	]
+}

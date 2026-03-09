@@ -1,0 +1,17 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build_debug/neural_implementation",
+      "args": [],
+      "cwd": "${workspaceFolder}/build_debug",
+      "preLaunchTask": "Build debug",
+      "stopAtEntry": false,
+      "console": "integratedTerminal",
+      "MIMode": "gdb"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+---
+Language: Cpp
+BasedOnStyle: LLVM
+
+# Use tabs for indentation
+UseTab: ForIndentation
+TabWidth: 4
+IndentWidth: 4
+
+# Const always on the right (e.g., int const* not const int*)
+QualifierAlignment: Right
+
+# One space inside parentheses: ( x ) not (x)
+SpacesInParentheses: true
+
+# Braces: same line for if/for/while, separate line for functions and classes
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterClass: true
+  AfterStruct: true
+  AfterFunction: true
+  AfterNamespace: true
+  AfterEnum: true
+  AfterControlStatement: Never
