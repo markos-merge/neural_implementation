@@ -2,6 +2,17 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
+			"label": "CMake: build",
+			"type": "cmake",
+			"command": "build",
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"problemMatcher": ["$gcc"],
+			"detail": "Incremental build (no clean)"
+		},
+		{
 			"label": "Build debug",
 			"type": "shell",
 			"command": "ninja",

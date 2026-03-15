@@ -2,10 +2,10 @@
 Language: Cpp
 BasedOnStyle: LLVM
 
-# Use tabs for indentation
+# Tabs for indentation, spaces for alignment (e.g. line continuations)
 UseTab: ForIndentation
-TabWidth: 4
-IndentWidth: 4
+TabWidth: 2
+IndentWidth: 2
 
 # Const always on the right (e.g., int const* not const int*)
 QualifierAlignment: Right

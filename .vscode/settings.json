@@ -1,5 +1,6 @@
 {
   "cmake.buildDirectory": "${workspaceFolder}/build_${variant:buildType}",
+  "cmake.buildTask": true,
   "cmake.defaultLaunchTarget": "neural_implementation",
   "code-runner.executorMap": {
     "cpp": "cd $workspaceRoot && ninja -C build_debug && ./build_debug/neural_implementation"

@@ -14,19 +14,24 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Eigen
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 
-# Catch2 for tests
-include(FetchContent)
-FetchContent_Declare(
-    Catch2
-    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-    GIT_TAG v3.5.0
-)
-FetchContent_MakeAvailable(Catch2)
+# Catch2 for tests (prefer system package to avoid FetchContent rebuilds)
+find_package(Catch2 3 QUIET)
+if(NOT Catch2_FOUND)
+	include(FetchContent)
+	set(FETCHCONTENT_UPDATES_DISCONNECTED_Catch2 ON)
+	FetchContent_Declare(
+	    Catch2
+	    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+	    GIT_TAG v3.5.0
+	)
+	FetchContent_MakeAvailable(Catch2)
+endif()
 
 # Core library
 add_library(neural_impl_lib
     src/tensor.cpp
 )
+
 target_include_directories(neural_impl_lib PUBLIC include)
 target_link_libraries(neural_impl_lib PUBLIC Eigen3::Eigen)
 
