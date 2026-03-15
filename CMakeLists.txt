@@ -4,7 +4,7 @@
 # C++ Standard: C++20
 # Build System: Ninja
 
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.16)
 project(neural_implementation)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -42,8 +42,15 @@ target_link_libraries(neural_implementation PRIVATE neural_impl_lib)
 # Tests
 add_executable(tests
     tests/test_tensor.cpp
+    tests/test_linear_layer.cpp
+    tests/test_relu_layer.cpp
+    tests/test_sigmoid_layer.cpp
 )
 target_link_libraries(tests PRIVATE Catch2::Catch2WithMain neural_impl_lib)
 include(CTest)
 enable_testing()
-add_test(NAME tests COMMAND tests)
+if(NOT Catch2_FOUND)
+	list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
+endif()
+include(Catch)
+catch_discover_tests(tests)

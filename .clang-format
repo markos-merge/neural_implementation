@@ -7,18 +7,24 @@ UseTab: ForIndentation
 TabWidth: 2
 IndentWidth: 2
 
+# Access specifiers at 1 tab, members at 2 tabs (one tab in from access specifier)
+IndentAccessModifiers: true
+
+# Template declaration always on its own line
+BreakTemplateDeclarations: Yes
+
 # Const always on the right (e.g., int const* not const int*)
 QualifierAlignment: Right
 
 # One space inside parentheses: ( x ) not (x)
 SpacesInParentheses: true
 
-# Braces: same line for if/for/while, separate line for functions and classes
+# Braces: same line for namespace/if/for/while, separate line for functions and classes
 BreakBeforeBraces: Custom
 BraceWrapping:
   AfterClass: true
   AfterStruct: true
   AfterFunction: true
-  AfterNamespace: true
+  AfterNamespace: false
   AfterEnum: true
   AfterControlStatement: Never
