@@ -20,7 +20,7 @@ Create a `docs/` folder with theory documentation that you can reference while i
 **docs/THEORY.md** - Core concepts:
 
 - **Neural network basics**: Perceptron, layers, forward pass (linear transform + activation)
-- **Loss functions**: MSE for regression, cross-entropy for classification
+- **Loss functions**: MSE for regression; cross-entropy for classification (paired with softmax on the final layer)
 - **Backpropagation**: Chain rule, computational graph, gradient flow from loss to each weight
 - **Automatic differentiation**: Forward vs reverse mode; backprop is reverse-mode AD applied to the forward pass computation graph
 - **Optimizers**: SGD, Momentum, AdaGrad, RMSprop, Adam (formulas and intuition)
@@ -45,7 +45,7 @@ include/
   tensor_gpu.hpp      # GPU backend (cuBLAS + CUDA kernels)
   layer.hpp           # Abstract layer interface
   linear_layer.hpp
-  activation.hpp      # ReLU, Sigmoid, etc.
+  activation.hpp      # ReLU, Sigmoid, Softmax (for classification output)
   loss.hpp            # MSE, CrossEntropy
   neural_network.hpp  # Composes layers, forward/backward
   optimizer.hpp       # Base optimizer
@@ -150,8 +150,8 @@ for (epoch : epochs) {
 | -------------- | ------------------------- | ------------------------------------------------------------- |
 | Tensor         | `test_tensor.cpp`         | matmul result, transpose, shape, element-wise ops             |
 | Linear layer   | `test_linear_layer.cpp`   | forward output shape, backward gradient shape; gradient check |
-| ReLU, Sigmoid  | `test_activation.cpp`     | ReLU: zeros stay zero, positives pass; Sigmoid: range (0,1)   |
-| MSE loss       | `test_loss.cpp`           | forward value, backward gradient                              |
+| ReLU, Sigmoid, Softmax | `test_activation.cpp` | ReLU: zeros stay zero, positives pass; Sigmoid: range (0,1); Softmax: outputs sum to 1 |
+| MSE, CrossEntropy | `test_loss.cpp`       | MSE: regression; CrossEntropy: classification (with softmax) |
 | NeuralNetwork  | `test_neural_network.cpp` | forward/backward shapes                                       |
 | Optimizers     | `test_optimizer.cpp`      | SGD/Momentum/Adam update formulas with known inputs           |
 | Gradient check | `test_gradient_check.cpp` | Compare backward pass to numerical gradients (finite diff)     |
@@ -162,8 +162,8 @@ for (epoch : epochs) {
 
 1. **Tensor/Matrix** – Eigen integration or minimal Tensor class (CPU) → `test_tensor.cpp`
 2. **Linear layer** – forward + backward → `test_linear_layer.cpp`
-3. **ReLU and Sigmoid** – forward + backward for both → `test_activation.cpp`
-4. **MSE loss** – forward + backward → `test_loss.cpp`
+3. **ReLU, Sigmoid, Softmax** – forward + backward for all; Softmax for classification output layer → `test_activation.cpp`
+4. **MSE and CrossEntropy loss** – MSE for regression; CrossEntropy for classification (with softmax) → `test_loss.cpp`
 5. **NeuralNetwork** – stack layers, forward, backward, parameter collection → `test_neural_network.cpp`
 6. **SGD optimizer** – basic training loop → `test_optimizer.cpp`
 7. **Momentum** – add velocity
@@ -180,6 +180,7 @@ for (epoch : epochs) {
 ## 9. Validation and Model Persistence
 
 - **XOR problem**: 2-4-1 network with sigmoid, MSE or BCE. Should converge in hundreds of epochs.
+- **Classification (e.g. MNIST)**: Final layer Linear → Softmax, loss CrossEntropy; outputs are class probabilities.
 - **Linear regression**: 1-1 network, verify it matches analytical solution.
 - **Gradient check**: Compare your backward pass to numerical gradients (finite differences) for small nets.
 - **Model save/load**: Implement `save(path)` and `load(path)` for `NeuralNetwork`.

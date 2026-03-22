@@ -1,0 +1,1356 @@
+#ifndef NEURAL_IMPL_CUDA_TENSOR_HPP
+#define NEURAL_IMPL_CUDA_TENSOR_HPP
+
+#include "neural_cuda_kernels.hpp"
+
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
+#include <cuda_runtime.h>
+#include <driver_types.h>
+#include <algorithm>
+#include <iterator>
+#include <random>
+#include <cmath>
+#include <chrono>
+#include <stdexcept>
+#include <thread>
+#include <type_traits>
+#include <utility>
+#include <vector>
+#include "cublas_handle.hpp"
+#include <cublas_v2.h>
+
+namespace neural {
+
+namespace detail {
+
+/// Wait for pending GPU work, then try \c cudaMalloc with short sleeps between retries.
+/// Helps transient \c cudaErrorMemoryAllocation when prior kernels have not finished
+/// or when freeing/realloc patterns leave the driver briefly short of memory.
+inline cudaError_t cuda_malloc_retry( void **dev_ptr, std::size_t size_bytes,
+                                      int max_attempts = 5 )
+{
+	(void)cudaDeviceSynchronize();
+	for ( int attempt = 0; attempt < max_attempts; ++attempt ) {
+		if ( attempt > 0 ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 10 * attempt ) );
+			(void)cudaDeviceSynchronize();
+		}
+		cudaError_t const err = cudaMalloc( dev_ptr, size_bytes );
+		if ( err == cudaSuccess ) {
+			return cudaSuccess;
+		}
+		if ( err != cudaErrorMemoryAllocation ) {
+			return err;
+		}
+	}
+	return cudaErrorMemoryAllocation;
+}
+
+} // namespace detail
+
+/// Placeholder matrix type for a future device-backed storage abstraction.
+template <typename T>
+struct CudaTensorMatrixPlaceholder
+{
+	using value_type = T;
+	T *data = nullptr;
+	std::size_t rows = 0;
+	std::size_t cols = 0;
+};
+
+template <typename T = float>
+class CudaTensor
+{
+#if NEURAL_CUDA_ENABLED
+		using fp8 = __nv_fp8_e4m3;
+#endif
+	public:
+		using value_type = T;
+		using matrix_type = CudaTensorMatrixPlaceholder<value_type>;
+		using size_type = std::size_t;
+
+	public:
+		CudaTensor() noexcept = default;
+		CudaTensor( std::size_t rows, std::size_t cols );
+
+		template <std::random_access_iterator It>
+		CudaTensor( std::size_t rows, std::size_t cols, It begin, It end );
+
+		CudaTensor( std::size_t rows, std::size_t cols, value_type value );
+		CudaTensor( CudaTensor const &other );
+		CudaTensor( CudaTensor &&other ) noexcept;
+		CudaTensor &operator=( CudaTensor const &other );
+		CudaTensor &operator=( CudaTensor &&other ) noexcept;
+		~CudaTensor();
+
+		std::size_t rows() const;
+		std::size_t cols() const;
+		std::size_t size() const;
+
+		/// Host-side element read: not implemented for device storage yet (would need
+		/// per-element cudaMemcpy; use kernels or \ref copyToHost for real work).
+		value_type operator()( std::size_t row, std::size_t col ) const;
+
+		void assign( std::size_t row, std::size_t col, value_type value );
+
+		/// Copy \p other 's first row into row \p row of this tensor (same column count).
+		/// Uses one \c cudaMemcpy (device-to-device).
+		void assignTensorAsRow( std::size_t row, CudaTensor const &other );
+
+		CudaTensor transpose() const;
+		CudaTensor &transposeInPlace() noexcept;
+		CudaTensor reshape( std::size_t rows, std::size_t cols ) const;
+		CudaTensor &reshapeInPlace( std::size_t rows, std::size_t cols );
+
+		CudaTensor matmul( CudaTensor const &other ) const;
+		CudaTensor &matmulInPlace( CudaTensor const &other );
+
+		CudaTensor divideRowsWithCol( CudaTensor const &other ) const;
+		CudaTensor &divideRowsWithColInPlace( CudaTensor const &other );
+
+		/// Largest absolute value among all elements (same semantics as Tensor::maxCoeff).
+		value_type maxCoeff() const;
+
+		CudaTensor operator+( CudaTensor const &other ) const;
+		CudaTensor &operator+=( CudaTensor const &other );
+		CudaTensor operator-( CudaTensor const &other ) const;
+		CudaTensor &operator-=( CudaTensor const &other );
+		CudaTensor addColwise( CudaTensor const &col ) const;
+		CudaTensor &addColwiseInPlace( CudaTensor const &col );
+		CudaTensor subtractColwise( CudaTensor const &col ) const;
+		CudaTensor operator*( CudaTensor const &other ) const;
+		CudaTensor &operator*=( CudaTensor const &other );
+		CudaTensor operator*( value_type scalar ) const;
+		CudaTensor &operator*=( value_type scalar );
+
+		CudaTensor cwiseGreater( value_type scalar ) const;
+		CudaTensor cwiseOneMinus() const;
+		CudaTensor cwiseSigmoid() const;
+		CudaTensor cwiseExp() const;
+		CudaTensor cwiseLog() const;
+
+		value_type sum() const;
+		CudaTensor sum_along_axis( std::size_t axis ) const;
+		CudaTensor max_along_axis( std::size_t axis ) const;
+
+		template <typename Generator>
+		void randomize( Generator &generator ) noexcept;
+		void randomize() noexcept;
+		void randomizeHe( std::size_t fan_in ) noexcept;
+
+		void copyToHost( T *host ) const;
+	private:
+		std::size_t m_rows = 0;
+		std::size_t m_cols = 0;
+		T *m_data_handle = nullptr;
+};
+
+/***************** Stub implementations (no GPU work yet) **********************/
+
+template <typename T>
+CudaTensor<T>::CudaTensor( std::size_t rows, std::size_t cols )
+    : m_rows( rows )
+    , m_cols( cols )
+{
+	if ( rows == 0 || cols == 0 ) {
+		return;
+	}
+	cudaError_t cuda_stat = detail::cuda_malloc_retry(
+	    reinterpret_cast<void **>( &m_data_handle ), rows * cols * sizeof( T ) );
+	if ( cuda_stat != cudaSuccess ) {
+		throw std::runtime_error( "device memory allocation failed" );
+	}
+	if constexpr ( std::is_same_v<T, float> ) {
+		cuda_stat = cuda_fill_float( m_data_handle, rows * cols, 0.f );
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cuda_stat = cuda_fill_fp8( m_data_handle, rows * cols, fp8{} );
+#endif
+	} else {
+		std::vector<T> host( rows * cols, T{} );
+		cuda_stat = cudaMemcpy( m_data_handle, host.data(), rows * cols * sizeof( T ),
+		                        cudaMemcpyHostToDevice );
+	}
+	if ( cuda_stat != cudaSuccess ) {
+		cudaFree( m_data_handle );
+		m_data_handle = nullptr;
+		throw std::runtime_error( "CudaTensor(rows,cols): device initialization failed" );
+	}
+}
+
+template <typename T>
+template <std::random_access_iterator It>
+CudaTensor<T>::CudaTensor( std::size_t rows, std::size_t cols, It begin, It end )
+    : m_rows( rows )
+    , m_cols( cols )
+{
+	std::size_t const n = rows * cols;
+	std::ptrdiff_t const dist = std::distance( begin, end );
+	if ( dist < 0 || static_cast<std::size_t>( dist ) != n ) {
+		throw std::invalid_argument(
+		    "CudaTensor(rows,cols,begin,end): iterator range size does not match rows*cols" );
+	}
+	if ( n == 0 ) {
+		return;
+	}
+	cudaError_t cuda_stat =
+	    detail::cuda_malloc_retry( reinterpret_cast<void **>( &m_data_handle ), n * sizeof( T ) );
+	if ( cuda_stat != cudaSuccess ) {
+		throw std::runtime_error( "device memory allocation failed" );
+	}
+	std::vector<T> host( begin, end );
+	cuda_stat = cudaMemcpy( m_data_handle, host.data(), n * sizeof( T ), cudaMemcpyHostToDevice );
+	if ( cuda_stat != cudaSuccess ) {
+		cudaFree( m_data_handle );
+		m_data_handle = nullptr;
+		throw std::runtime_error( "CudaTensor iterator ctor: host to device copy failed" );
+	}
+}
+
+template <typename T>
+CudaTensor<T>::~CudaTensor(){
+	if ( m_data_handle != nullptr ){
+		cudaFree( m_data_handle );
+		m_data_handle = nullptr;
+	}
+}
+
+template <typename T>
+CudaTensor<T>::CudaTensor( std::size_t rows, std::size_t cols, value_type value )
+    : m_rows( rows )
+    , m_cols( cols )
+{
+	cudaError_t cuda_stat = detail::cuda_malloc_retry(
+	    reinterpret_cast<void **>( &m_data_handle ), rows * cols * sizeof( T ) );
+	if ( cuda_stat != cudaSuccess ) {
+		throw std::runtime_error( "device memory allocation failed" );
+	}
+	if constexpr ( std::is_same_v<T, float> ) {
+		cuda_stat = cuda_fill_float( m_data_handle, rows * cols, value );
+	}
+#if NEURAL_CUDA_ENABLED
+	else if constexpr ( std::is_same_v<T, fp8> ) {
+		cuda_stat = cuda_fill_fp8( m_data_handle, rows * cols, value );
+	}
+#endif
+	else {
+		std::vector<T> host( rows * cols, value );
+		cuda_stat = cudaMemcpy( m_data_handle, host.data(), rows * cols * sizeof( T ),
+		                        cudaMemcpyHostToDevice );
+	}
+	if ( cuda_stat != cudaSuccess ) {
+		cudaFree( m_data_handle );
+		m_data_handle = nullptr;
+		throw std::runtime_error( "device fill failed" );
+	}
+}
+
+template <typename T>
+CudaTensor<T>::CudaTensor( CudaTensor const &other )
+    : m_rows( other.m_rows )
+    , m_cols( other.m_cols )
+{
+	if ( other.m_data_handle != nullptr ) {
+		cudaError_t cuda_stat = detail::cuda_malloc_retry(
+		    reinterpret_cast<void **>( &m_data_handle ),
+		    other.m_rows * other.m_cols * sizeof( T ) );
+		if ( cuda_stat != cudaSuccess ) {
+			throw std::runtime_error( "device memory allocation failed" );
+		}
+		cuda_stat = cudaMemcpy( m_data_handle, other.m_data_handle,
+		                        other.m_rows * other.m_cols * sizeof( T ),
+		                        cudaMemcpyDeviceToDevice );
+		if ( cuda_stat != cudaSuccess ) {
+			cudaFree( m_data_handle );
+			m_data_handle = nullptr;
+			throw std::runtime_error( "device memory copy failed" );
+		}
+	} else {
+		m_data_handle = nullptr;
+	}
+}
+
+template <typename T>
+CudaTensor<T>::CudaTensor( CudaTensor &&other ) noexcept
+    : m_rows( other.m_rows )
+    , m_cols( other.m_cols )
+    , m_data_handle( other.m_data_handle )
+{
+	other.m_data_handle = nullptr;
+	other.m_rows = 0;
+	other.m_cols = 0;
+}
+
+template <typename T>
+CudaTensor<T> &CudaTensor<T>::operator=( CudaTensor const &other )
+{
+	if ( this == &other ) {
+		return *this;
+	}
+	if ( other.m_data_handle == nullptr ) {
+		if ( m_data_handle != nullptr ) {
+			cudaFree( m_data_handle );
+			m_data_handle = nullptr;
+		}
+		m_rows = other.m_rows;
+		m_cols = other.m_cols;
+		return *this;
+	}
+	m_rows = other.m_rows;
+	m_cols = other.m_cols;
+	if ( m_data_handle != nullptr
+	     && m_rows * m_cols == other.m_rows * other.m_cols ) {
+		cudaError_t const cuda_stat =
+		    cudaMemcpy( m_data_handle, other.m_data_handle,
+		                other.m_rows * other.m_cols * sizeof( T ),
+		                cudaMemcpyDeviceToDevice );
+		if ( cuda_stat != cudaSuccess ) {
+			throw std::runtime_error( "device memory copy failed" );
+		}
+		return *this;
+	}
+	if ( m_data_handle != nullptr ) {
+		cudaFree( m_data_handle );
+		m_data_handle = nullptr;
+	}
+	cudaError_t cuda_stat = detail::cuda_malloc_retry(
+	    reinterpret_cast<void **>( &m_data_handle ),
+	    other.m_rows * other.m_cols * sizeof( T ) );
+	if ( cuda_stat != cudaSuccess ) {
+		throw std::runtime_error( "device memory allocation failed" );
+	}
+	cuda_stat = cudaMemcpy( m_data_handle, other.m_data_handle,
+	                        other.m_rows * other.m_cols * sizeof( T ),
+	                        cudaMemcpyDeviceToDevice );
+	if ( cuda_stat != cudaSuccess ) {
+		cudaFree( m_data_handle );
+		m_data_handle = nullptr;
+		throw std::runtime_error( "device memory copy failed" );
+	}
+	return *this;
+}
+
+template <typename T>
+CudaTensor<T> &CudaTensor<T>::operator=( CudaTensor &&other ) noexcept
+{
+	if ( this == &other ) {
+		return *this;
+	}
+	if ( m_data_handle != nullptr ) {
+		cudaFree( m_data_handle );
+	}
+	m_rows = other.m_rows;
+	m_cols = other.m_cols;
+	m_data_handle = other.m_data_handle;
+	other.m_data_handle = nullptr;
+	other.m_rows = 0;
+	other.m_cols = 0;
+	return *this;
+}
+
+template <typename T>
+std::size_t CudaTensor<T>::rows() const
+{
+	return m_rows;
+}
+
+template <typename T>
+std::size_t CudaTensor<T>::cols() const
+{
+	return m_cols;
+}
+
+template <typename T>
+std::size_t CudaTensor<T>::size() const
+{
+	return m_rows * m_cols;
+}
+
+template <typename T>
+typename CudaTensor<T>::value_type CudaTensor<T>::operator()( std::size_t row,
+                                                              std::size_t col ) const
+{
+	if ( row >= m_rows || col >= m_cols ) {
+		throw std::out_of_range( "CudaTensor::operator(): index out of range" );
+	}
+	if ( m_data_handle == nullptr || m_rows == 0 || m_cols == 0 ) {
+		return value_type{};
+	}
+	T value{};
+	cudaError_t const cuda_stat =
+	    cudaMemcpy( &value, m_data_handle + row * m_cols + col, sizeof( T ),
+	                cudaMemcpyDeviceToHost );
+	if ( cuda_stat != cudaSuccess ) {
+		throw std::runtime_error( "CudaTensor::operator(): device to host copy failed" );
+	}
+
+	return value;
+}
+
+template <typename T>
+void CudaTensor<T>::assign( std::size_t row, std::size_t col, value_type value )
+{
+	if ( row >= m_rows || col >= m_cols ) {
+		throw std::out_of_range( "CudaTensor::assign(): index out of range" );
+	}
+	if ( m_data_handle == nullptr || m_rows == 0 || m_cols == 0 ) {
+		return;
+	}
+	cudaError_t const cuda_stat =
+	    cudaMemcpy( m_data_handle + row * m_cols + col, &value, sizeof( T ), cudaMemcpyHostToDevice );
+	
+	if ( cuda_stat != cudaSuccess ) {
+		throw std::runtime_error( "CudaTensor::assign(): host to device copy failed" );
+	}
+}
+
+template <typename T>
+void CudaTensor<T>::assignTensorAsRow( std::size_t row, CudaTensor const &other )
+{
+	if ( row >= m_rows ) {
+		throw std::out_of_range( "CudaTensor::assignTensorAsRow(): row out of range" );
+	}
+	if ( m_data_handle == nullptr || m_cols == 0 ) {
+		return;
+	}
+	if ( other.m_data_handle == nullptr || other.m_rows < 1 || other.m_cols != m_cols ) {
+		throw std::invalid_argument(
+		    "CudaTensor::assignTensorAsRow(): other must have rows>=1 and same cols()" );
+	}
+	cudaError_t const cuda_stat =
+	    cudaMemcpy( m_data_handle + row * m_cols, other.m_data_handle,
+	                m_cols * sizeof( T ), cudaMemcpyDeviceToDevice );
+	if ( cuda_stat != cudaSuccess ) {
+		throw std::runtime_error( "CudaTensor::assignTensorAsRow(): cudaMemcpy failed" );
+	}
+}
+
+template <typename T>
+CudaTensor<T> CudaTensor<T>::transpose() const
+{
+	if ( m_data_handle == nullptr || m_rows == 0 || m_cols == 0 ) {
+		return CudaTensor<T>( m_cols, m_rows );
+	}
+	CudaTensor<T> out( m_cols, m_rows );
+	if constexpr ( std::is_same_v<T, float> ) {
+		cudaError_t const err =
+		    cuda_transpose_float( m_data_handle, out.m_data_handle, m_rows, m_cols );
+		if ( err != cudaSuccess ) {
+			return CudaTensor<T>{};
+		}
+		return out;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cudaError_t const err = cuda_transpose_fp8( m_data_handle, out.m_data_handle, m_rows, m_cols );
+		if ( err != cudaSuccess ) {
+			return CudaTensor<T>{};
+		}
+		return out;
+#endif
+	} else {
+		(void)out;
+		return CudaTensor<T>{};
+	}
+}
+
+template <typename T>
+CudaTensor<T> &CudaTensor<T>::transposeInPlace() noexcept
+{
+	*this = transpose();
+	return *this;
+}
+
+template <typename T>
+CudaTensor<T> CudaTensor<T>::reshape( std::size_t rows, std::size_t cols ) const
+{
+	CudaTensor<T> out( *this );
+	out.reshapeInPlace( rows, cols );
+
+	return out;
+}
+
+template <typename T>
+CudaTensor<T> &CudaTensor<T>::reshapeInPlace( std::size_t rows, std::size_t cols )
+{
+	if ( rows * cols != m_rows * m_cols ) {
+		throw std::invalid_argument(
+		    "CudaTensor::reshapeInPlace: new shape must have the same number of elements" );
+	}
+	m_rows = rows;
+	m_cols = cols;
+
+	return *this;
+}
+
+template <typename T>
+CudaTensor<T> CudaTensor<T>::matmul( CudaTensor const &other ) const
+{
+	if ( m_data_handle == nullptr || other.m_data_handle == nullptr ) {
+		throw std::runtime_error( "CudaTensor::matmul(): one of the tensors is not initialized" );
+	}
+	if ( m_cols != other.m_rows ) {
+		throw std::invalid_argument( "CudaTensor::matmul(): incompatible dimensions" );
+	}
+	CudaTensor<T> out( m_rows, other.m_cols );
+	// Row-major C = A*B with A (m×k), B (k×n), C (m×n): cuBLAS is column-major; use the
+	// standard row-major recipe (B, A) with dimensions (n, m, k) and ldc = n. See NVIDIA
+	// cuBLAS documentation on row-major matrix multiply.
+	if constexpr ( std::is_same_v<T, float> ) {
+		float const alpha = 1.0f;
+		float const beta = 0.0f;
+		cublasStatus_t const st = cublasSgemm(
+		    CublasHandle::instance(),
+		    CUBLAS_OP_N,
+		    CUBLAS_OP_N,
+		    static_cast<int>( other.m_cols ),
+		    static_cast<int>( m_rows ),
+		    static_cast<int>( m_cols ),
+		    &alpha,
+		    other.m_data_handle,
+		    static_cast<int>( other.m_cols ),
+		    m_data_handle,
+		    static_cast<int>( m_cols ),
+		    &beta,
+		    out.m_data_handle,
+		    static_cast<int>( other.m_cols ) );
+		if ( st != CUBLAS_STATUS_SUCCESS ) {
+			return CudaTensor<T>{};
+		}
+		return out;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cudaError_t const cuda_stat = cuda_matmul_fp8( m_data_handle, other.m_data_handle, out.m_data_handle, m_rows, m_cols, other.m_rows, other.m_cols );
+		if ( cuda_stat != cudaSuccess ) {
+			return CudaTensor<T>{};
+		}
+		return out;
+#endif
+	} else {
+		(void)out;
+		return CudaTensor<T>{};
+	}
+}
+
+template <typename T>
+CudaTensor<T> &CudaTensor<T>::matmulInPlace( CudaTensor const &other )
+{
+	CudaTensor<T> out = matmul( other );
+	*this = std::move( out );
+	return *this;
+}
+
+template <typename T>
+CudaTensor<T> CudaTensor<T>::divideRowsWithCol( CudaTensor const &other ) const
+{
+	if ( m_data_handle == nullptr || other.m_data_handle == nullptr ) {
+		throw std::runtime_error( "CudaTensor::divideRowsWithCol(): one of the tensors is not initialized" );
+	}
+	if ( m_cols != other.m_cols ) {
+		throw std::invalid_argument( "CudaTensor::divideRowsWithCol(): incompatible dimensions" );
+	}
+	CudaTensor<T> out( *this );
+
+	if constexpr ( std::is_same_v<T, float> ) {
+		cudaError_t const cuda_stat = divide_rows_with_col_float(
+		    out.m_data_handle, other.m_data_handle, m_rows, m_cols );
+		if ( cuda_stat != cudaSuccess ) {
+			return CudaTensor<T>{};
+		}
+
+		return out;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cudaError_t const cuda_stat = divide_rows_with_col_fp8(
+		    out.m_data_handle, other.m_data_handle, m_rows, m_cols );
+		if ( cuda_stat != cudaSuccess ) {
+			return CudaTensor<T>{};
+		}
+
+		return out;
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::divideRowsWithCol(): unsupported type" );
+	}
+}
+
+template <typename T>
+CudaTensor<T> &CudaTensor<T>::divideRowsWithColInPlace( CudaTensor const &other )
+{
+	if ( m_data_handle == nullptr || other.m_data_handle == nullptr ) {
+		throw std::runtime_error( "CudaTensor::divideRowsWithColInPlace(): one of the tensors is not initialized" );
+	}
+	if ( m_rows != other.m_rows || other.m_cols != 1u ) {
+		throw std::invalid_argument( "CudaTensor::divideRowsWithColInPlace(): incompatible dimensions" );
+	}
+	cudaError_t cuda_stat = cudaSuccess;
+	if constexpr ( std::is_same_v<T, float> ) {
+		cuda_stat = divide_rows_with_col_float( m_data_handle, other.m_data_handle, m_rows,
+		                                          m_cols );
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cuda_stat = divide_rows_with_col_fp8( m_data_handle, other.m_data_handle, m_rows,
+		                                      m_cols );
+#endif
+	} else {
+		throw std::invalid_argument(
+		    "CudaTensor::divideRowsWithColInPlace(): unsupported type" );
+	}
+	if ( cuda_stat != cudaSuccess ) {
+		throw std::runtime_error( "CudaTensor::divideRowsWithColInPlace(): device operation failed" );
+	}
+
+	return *this;
+}
+
+template <typename T>
+typename CudaTensor<T>::value_type CudaTensor<T>::maxCoeff() const
+{
+	if ( m_data_handle == nullptr || size() == 0 ) {
+		return value_type{};
+	}
+	if constexpr ( std::is_same_v<T, float> ) {
+		float m = 0.f;
+		cudaError_t const err = cuda_max_abs_float( m_data_handle, size(), &m );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::maxCoeff(): cuda_max_abs_float failed" );
+		}
+		return m;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		float m = 0.f;
+		cudaError_t const err = cuda_max_abs_fp8( m_data_handle, size(), &m );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::maxCoeff(): cuda_max_abs_fp8 failed" );
+		}
+		return static_cast<fp8>( m );
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::maxCoeff(): unsupported type" );
+	}
+}
+
+template <typename T>
+CudaTensor<T> CudaTensor<T>::operator+( CudaTensor const &other ) const
+{
+	if ( m_rows != other.m_rows || m_cols != other.m_cols ) {
+		throw std::invalid_argument( "CudaTensor::operator+(): incompatible dimensions" );
+	}
+	if ( size() == 0 ) {
+		return CudaTensor<T>{};
+	}
+	if ( m_data_handle == nullptr || other.m_data_handle == nullptr ) {
+		throw std::runtime_error( "CudaTensor::operator+(): one of the tensors is not initialized" );
+	}
+	CudaTensor<T> out( m_rows, m_cols, value_type{} );
+	if constexpr ( std::is_same_v<T, float> ) {
+		float const alpha = 1.0f;
+		float const beta = 1.0f;
+		cublasStatus_t const st = cublasSgeam(
+		    CublasHandle::instance(),
+		    CUBLAS_OP_N,
+		    CUBLAS_OP_N,
+		    static_cast<int>( m_cols ),
+		    static_cast<int>( m_rows ),
+		    &alpha,
+		    m_data_handle,
+		    static_cast<int>( m_cols ),
+		    &beta,
+		    other.m_data_handle,
+		    static_cast<int>( m_cols ),
+		    out.m_data_handle,
+		    static_cast<int>( m_cols ) );
+		if ( st != CUBLAS_STATUS_SUCCESS ) {
+			throw std::runtime_error( "CudaTensor::operator+(): cublasSgeam failed" );
+		}
+		cudaError_t const sync = cudaDeviceSynchronize();
+		if ( sync != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::operator+(): cudaDeviceSynchronize failed" );
+		}
+		return out;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cudaError_t const err = cuda_add_fp8(
+		    m_data_handle, other.m_data_handle, out.m_data_handle, size(), 1.0f, 1.0f );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::operator+(): cuda_add_fp8 failed" );
+		}
+		return out;
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::operator+(): unsupported type" );
+	}
+}
+
+template <typename T>
+CudaTensor<T> &CudaTensor<T>::operator+=( CudaTensor const &other )
+{
+	if ( m_rows != other.m_rows || m_cols != other.m_cols ) {
+		throw std::invalid_argument( "CudaTensor::operator+=(): incompatible dimensions" );
+	}
+	if ( size() == 0 ) {
+		return *this;
+	}
+	if ( m_data_handle == nullptr || other.m_data_handle == nullptr ) {
+		throw std::runtime_error( "CudaTensor::operator+=(): one of the tensors is not initialized" );
+	}
+	if constexpr ( std::is_same_v<T, float> ) {
+		float const alpha = 1.0f;
+		float const beta = 1.0f;
+		cublasStatus_t const st = cublasSgeam(
+		    CublasHandle::instance(),
+		    CUBLAS_OP_N,
+		    CUBLAS_OP_N,
+		    static_cast<int>( m_cols ),
+		    static_cast<int>( m_rows ),
+		    &alpha,
+		    m_data_handle,
+		    static_cast<int>( m_cols ),
+		    &beta,
+		    other.m_data_handle,
+		    static_cast<int>( m_cols ),
+		    m_data_handle,
+		    static_cast<int>( m_cols ) );
+		if ( st != CUBLAS_STATUS_SUCCESS ) {
+			throw std::runtime_error( "CudaTensor::operator+=(): cublasSgeam failed" );
+		}
+		cudaError_t const sync = cudaDeviceSynchronize();
+		if ( sync != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::operator+=(): cudaDeviceSynchronize failed" );
+		}
+		return *this;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cudaError_t const err = cuda_add_fp8(
+		    m_data_handle, other.m_data_handle, m_data_handle, size(), 1.0f, 1.0f );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::operator+=(): cuda_add_fp8 failed" );
+		}
+		return *this;
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::operator+=(): unsupported type" );
+	}
+}
+
+template <typename T>
+CudaTensor<T> CudaTensor<T>::operator-( CudaTensor const &other ) const
+{
+	if ( m_rows != other.m_rows || m_cols != other.m_cols ) {
+		throw std::invalid_argument( "CudaTensor::operator+(): incompatible dimensions" );
+	}
+	if ( size() == 0 ) {
+		return CudaTensor<T>{};
+	}
+	if ( m_data_handle == nullptr || other.m_data_handle == nullptr ) {
+		throw std::runtime_error( "CudaTensor::operator+(): one of the tensors is not initialized" );
+	}
+	CudaTensor<T> out( m_rows, m_cols, value_type{} );
+	if constexpr ( std::is_same_v<T, float> ) {
+		float const alpha = 1.0f;
+		float const beta = -1.0f;
+		cublasStatus_t const st = cublasSgeam(
+		    CublasHandle::instance(),
+		    CUBLAS_OP_N,
+		    CUBLAS_OP_N,
+		    static_cast<int>( m_cols ),
+		    static_cast<int>( m_rows ),
+		    &alpha,
+		    m_data_handle,
+		    static_cast<int>( m_cols ),
+		    &beta,
+		    other.m_data_handle,
+		    static_cast<int>( m_cols ),
+		    out.m_data_handle,
+		    static_cast<int>( m_cols ) );
+		if ( st != CUBLAS_STATUS_SUCCESS ) {
+			throw std::runtime_error( "CudaTensor::operator+(): cublasSgeam failed" );
+		}
+		cudaError_t const sync = cudaDeviceSynchronize();
+		if ( sync != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::operator+(): cudaDeviceSynchronize failed" );
+		}
+		return out;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cudaError_t const err = cuda_add_fp8(
+		    m_data_handle, other.m_data_handle, out.m_data_handle, size(), 1.0f, -1.0f );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::operator+(): cuda_add_fp8 failed" );
+		}
+		return out;
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::operator+(): unsupported type" );
+	}
+}
+
+template <typename T>
+CudaTensor<T> &CudaTensor<T>::operator-=( CudaTensor const &other )
+{
+	if ( m_rows != other.m_rows || m_cols != other.m_cols ) {
+		throw std::invalid_argument( "CudaTensor::operator+=(): incompatible dimensions" );
+	}
+	if ( size() == 0 ) {
+		return *this;
+	}
+	if ( m_data_handle == nullptr || other.m_data_handle == nullptr ) {
+		throw std::runtime_error( "CudaTensor::operator+=(): one of the tensors is not initialized" );
+	}
+	if constexpr ( std::is_same_v<T, float> ) {
+		float const alpha = 1.0f;
+		float const beta = -1.0f;
+		cublasStatus_t const st = cublasSgeam(
+		    CublasHandle::instance(),
+		    CUBLAS_OP_N,
+		    CUBLAS_OP_N,
+		    static_cast<int>( m_cols ),
+		    static_cast<int>( m_rows ),
+		    &alpha,
+		    m_data_handle,
+		    static_cast<int>( m_cols ),
+		    &beta,
+		    other.m_data_handle,
+		    static_cast<int>( m_cols ),
+		    m_data_handle,
+		    static_cast<int>( m_cols ) );
+		if ( st != CUBLAS_STATUS_SUCCESS ) {
+			throw std::runtime_error( "CudaTensor::operator+=(): cublasSgeam failed" );
+		}
+		cudaError_t const sync = cudaDeviceSynchronize();
+		if ( sync != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::operator+=(): cudaDeviceSynchronize failed" );
+		}
+		return *this;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cudaError_t const err = cuda_add_fp8(
+		    m_data_handle, other.m_data_handle, m_data_handle, size(), 1.0f, -1.0f );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::operator+=(): cuda_add_fp8 failed" );
+		}
+		return *this;
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::operator+=(): unsupported type" );
+	}
+	
+	return *this;
+}
+
+template <typename T>
+CudaTensor<T> CudaTensor<T>::addColwise( CudaTensor const &col ) const
+{
+	if ( m_data_handle == nullptr || col.m_data_handle == nullptr ) {
+		throw std::runtime_error( "CudaTensor::addColwise(): one of the tensors is not initialized" );
+	}
+	if ( col.m_rows != m_cols || col.m_cols != 1u ) {
+		throw std::invalid_argument(
+		    "CudaTensor::addColwise(): col must be (cols() x 1), same cols as this tensor" );
+	}
+	CudaTensor<T> out = *this;
+	
+	out.addColwiseInPlace( col );
+
+	return out;
+}
+
+template <typename T>
+CudaTensor<T> &CudaTensor<T>::addColwiseInPlace( CudaTensor const &col )
+{
+	if ( m_data_handle == nullptr || col.m_data_handle == nullptr ) {
+		throw std::runtime_error( "CudaTensor::addColwiseInPlace(): one of the tensors is not initialized" );
+	}
+	if ( col.m_rows != m_cols || col.m_cols != 1u ) {
+		throw std::invalid_argument(
+		    "CudaTensor::addColwiseInPlace(): col must be (cols() x 1), same cols as this tensor" );
+	}
+	cudaError_t cuda_stat = cudaSuccess;
+	if constexpr ( std::is_same_v<T, float> ) {
+		cuda_stat = cuda_add_colwise_float( m_data_handle, col.m_data_handle, m_rows, m_cols, 1.f );
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cuda_stat = cuda_add_colwise_fp8( m_data_handle, col.m_data_handle, m_rows, m_cols, 1.f );
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::addColwiseInPlace(): unsupported type" );
+	}
+	if ( cuda_stat != cudaSuccess ) {
+		throw std::runtime_error( "CudaTensor::addColwiseInPlace(): device operation failed" );
+	}
+
+	return *this;
+}
+
+template <typename T>
+CudaTensor<T> CudaTensor<T>::subtractColwise( CudaTensor const &col ) const
+{
+	if ( m_data_handle == nullptr || col.m_data_handle == nullptr ) {
+		throw std::runtime_error( "CudaTensor::subtractColwise(): one of the tensors is not initialized" );
+	}
+
+	if ( col.m_rows != m_rows || col.m_cols != 1u ) {
+		throw std::invalid_argument(
+		    "CudaTensor::subtractColwise(): row must be (rows() x 1), same rows as this tensor" );
+	}
+	cudaError_t cuda_stat = cudaSuccess;
+	CudaTensor<T> out = *this;
+	if constexpr ( std::is_same_v<T, float> ) {
+		cuda_stat = cuda_add_rowwise_float( out.m_data_handle, col.m_data_handle, m_rows, m_cols, -1.f );
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cuda_stat = cuda_add_rowwise_fp8( out.m_data_handle, col.m_data_handle, m_rows, m_cols, -1.f );
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::subtractColwise(): unsupported type" );
+	}
+	if ( cuda_stat != cudaSuccess ) {
+		throw std::runtime_error( "CudaTensor::subtractColwise(): device operation failed" );
+	}
+
+	return out;
+}
+
+template <typename T>
+CudaTensor<T> CudaTensor<T>::operator*( CudaTensor const &other ) const
+{
+	if ( m_rows != other.m_rows || m_cols != other.m_cols ) {
+		throw std::invalid_argument( "CudaTensor::operator*(): incompatible dimensions" );
+	}
+	if ( size() == 0 ) {
+		return CudaTensor<T>{};
+	}
+	if ( m_data_handle == nullptr || other.m_data_handle == nullptr ) {
+		throw std::runtime_error( "CudaTensor::operator*(): one of the tensors is not initialized" );
+	}
+	CudaTensor<T> out( m_rows, m_cols, value_type{} );
+	if constexpr ( std::is_same_v<T, float> ) {
+		cudaError_t const err =
+		    cuda_mul_float( m_data_handle, other.m_data_handle, out.m_data_handle, size() );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::operator*(): cuda_mul_float failed" );
+		}
+		return out;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cudaError_t const err =
+		    cuda_mul_fp8( m_data_handle, other.m_data_handle, out.m_data_handle, size() );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::operator*(): cuda_mul_fp8 failed" );
+		}
+		return out;
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::operator*(): unsupported type" );
+	}
+}
+
+template <typename T>
+CudaTensor<T> &CudaTensor<T>::operator*=( CudaTensor const &other )
+{
+	if ( m_rows != other.m_rows || m_cols != other.m_cols ) {
+		throw std::invalid_argument( "CudaTensor::operator*=(): incompatible dimensions" );
+	}
+	if ( size() == 0 ) {
+		return *this;
+	}
+	if ( m_data_handle == nullptr || other.m_data_handle == nullptr ) {
+		throw std::runtime_error( "CudaTensor::operator*=(): one of the tensors is not initialized" );
+	}
+	if constexpr ( std::is_same_v<T, float> ) {
+		cudaError_t const err = cuda_mul_float_inplace( m_data_handle, other.m_data_handle, size() );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::operator*=(): cuda_mul_float_inplace failed" );
+		}
+		return *this;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cudaError_t const err = cuda_mul_fp8_inplace( m_data_handle, other.m_data_handle, size() );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::operator*=(): cuda_mul_fp8_inplace failed" );
+		}
+		return *this;
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::operator*=(): unsupported type" );
+	}
+}
+
+template <typename T>
+CudaTensor<T> CudaTensor<T>::operator*( value_type scalar ) const
+{
+	if ( size() == 0 ) {
+		return CudaTensor<T>{};
+	}
+	if ( m_data_handle == nullptr ) {
+		throw std::runtime_error( "CudaTensor::operator*(): tensor is not initialized" );
+	}
+	CudaTensor<T> out( *this );
+	if constexpr ( std::is_same_v<T, float> ) {
+		cudaError_t const err = cuda_scale_float( out.m_data_handle, size(), scalar );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::operator*(): cuda_scale_float failed" );
+		}
+		return out;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		float const alpha = static_cast<float>( static_cast<__half>( scalar ) );
+		cudaError_t const err = cuda_scale_fp8( out.m_data_handle, size(), alpha );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::operator*(): cuda_scale_fp8 failed" );
+		}
+		return out;
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::operator*(): unsupported type" );
+	}
+}
+
+template <typename T>
+CudaTensor<T> &CudaTensor<T>::operator*=( value_type scalar )
+{
+	if ( size() == 0 ) {
+		return *this;
+	}
+	if ( m_data_handle == nullptr ) {
+		throw std::runtime_error( "CudaTensor::operator*=(): tensor is not initialized" );
+	}
+	if constexpr ( std::is_same_v<T, float> ) {
+		cudaError_t const err = cuda_scale_float( m_data_handle, size(), scalar );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::operator*=(): cuda_scale_float failed" );
+		}
+		return *this;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		float const alpha = static_cast<float>( static_cast<__half>( scalar ) );
+		cudaError_t const err = cuda_scale_fp8( m_data_handle, size(), alpha );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::operator*=(): cuda_scale_fp8 failed" );
+		}
+		return *this;
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::operator*=(): unsupported type" );
+	}
+}
+
+template <typename T>
+CudaTensor<T> CudaTensor<T>::cwiseGreater( value_type scalar ) const
+{
+	if ( size() == 0 || m_data_handle == nullptr ) {
+		return CudaTensor<T>{};
+	}
+	CudaTensor<T> out( m_rows, m_cols, value_type{} );
+	if constexpr ( std::is_same_v<T, float> ) {
+		cudaError_t const err =
+		    cuda_cwise_greater_float( m_data_handle, out.m_data_handle, size(), static_cast<float>( scalar ) );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::cwiseGreater(): cuda_cwise_greater_float failed" );
+		}
+		return out;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		float const s = static_cast<float>( static_cast<__half>( scalar ) );
+		cudaError_t const err =
+		    cuda_cwise_greater_fp8( m_data_handle, out.m_data_handle, size(), s );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::cwiseGreater(): cuda_cwise_greater_fp8 failed" );
+		}
+		return out;
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::cwiseGreater(): unsupported type" );
+	}
+}
+
+template <typename T>
+CudaTensor<T> CudaTensor<T>::cwiseOneMinus() const
+{
+	if ( size() == 0 || m_data_handle == nullptr ) {
+		return CudaTensor<T>{};
+	}
+	CudaTensor<T> out( m_rows, m_cols, value_type{} );
+	if constexpr ( std::is_same_v<T, float> ) {
+		cudaError_t const err = cuda_cwise_one_minus_float( m_data_handle, out.m_data_handle, size() );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::cwiseOneMinus(): cuda_cwise_one_minus_float failed" );
+		}
+		return out;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cudaError_t const err = cuda_cwise_one_minus_fp8( m_data_handle, out.m_data_handle, size() );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::cwiseOneMinus(): cuda_cwise_one_minus_fp8 failed" );
+		}
+		return out;
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::cwiseOneMinus(): unsupported type" );
+	}
+}
+
+template <typename T>
+CudaTensor<T> CudaTensor<T>::cwiseSigmoid() const
+{
+	if ( size() == 0 || m_data_handle == nullptr ) {
+		return CudaTensor<T>{};
+	}
+	CudaTensor<T> out( m_rows, m_cols, value_type{} );
+	if constexpr ( std::is_same_v<T, float> ) {
+		cudaError_t const err = cuda_cwise_sigmoid_float( m_data_handle, out.m_data_handle, size() );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::cwiseSigmoid(): cuda_cwise_sigmoid_float failed" );
+		}
+		return out;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cudaError_t const err = cuda_cwise_sigmoid_fp8( m_data_handle, out.m_data_handle, size() );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::cwiseSigmoid(): cuda_cwise_sigmoid_fp8 failed" );
+		}
+		return out;
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::cwiseSigmoid(): unsupported type" );
+	}
+}
+
+template <typename T>
+CudaTensor<T> CudaTensor<T>::cwiseExp() const
+{
+	if ( size() == 0 || m_data_handle == nullptr ) {
+		return CudaTensor<T>{};
+	}
+	CudaTensor<T> out( m_rows, m_cols, value_type{} );
+	if constexpr ( std::is_same_v<T, float> ) {
+		cudaError_t const err = cuda_cwise_exp_float( m_data_handle, out.m_data_handle, size() );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::cwiseExp(): cuda_cwise_exp_float failed" );
+		}
+		return out;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cudaError_t const err = cuda_cwise_exp_fp8( m_data_handle, out.m_data_handle, size() );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::cwiseExp(): cuda_cwise_exp_fp8 failed" );
+		}
+		return out;
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::cwiseExp(): unsupported type" );
+	}
+}
+
+template <typename T>
+CudaTensor<T> CudaTensor<T>::cwiseLog() const
+{
+	if ( size() == 0 || m_data_handle == nullptr ) {
+		return CudaTensor<T>{};
+	}
+	CudaTensor<T> out( m_rows, m_cols, value_type{} );
+	if constexpr ( std::is_same_v<T, float> ) {
+		cudaError_t const err = cuda_cwise_log_float( m_data_handle, out.m_data_handle, size() );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::cwiseLog(): cuda_cwise_log_float failed" );
+		}
+		return out;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cudaError_t const err = cuda_cwise_log_fp8( m_data_handle, out.m_data_handle, size() );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::cwiseLog(): cuda_cwise_log_fp8 failed" );
+		}
+		return out;
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::cwiseLog(): unsupported type" );
+	}
+}
+
+template <typename T>
+T CudaTensor<T>::sum() const
+{
+	if ( size() == 0 || m_data_handle == nullptr ) {
+		return value_type{};
+	}
+	if constexpr ( std::is_same_v<T, float> ) {
+		float h = 0.f;
+		cudaError_t const err = cuda_sum_float( m_data_handle, size(), &h );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::sum(): cuda_sum_float failed" );
+		}
+		return h;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		float h = 0.f;
+		cudaError_t const err = cuda_sum_fp8( m_data_handle, size(), &h );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::sum(): cuda_sum_fp8 failed" );
+		}
+		return static_cast<fp8>( static_cast<__half>( h ) );
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::sum(): unsupported type" );
+	}
+}
+
+template <typename T>
+CudaTensor<T> CudaTensor<T>::sum_along_axis( std::size_t axis ) const
+{
+	if ( axis != 0 && axis != 1 ) {
+		throw std::invalid_argument( "CudaTensor::sum_along_axis(): axis must be 0 or 1" );
+	}
+	if ( size() == 0 || m_data_handle == nullptr ) {
+		return CudaTensor<T>{};
+	}
+	if ( axis == 0 ) {
+		CudaTensor<T> out( 1u, m_cols, value_type{} );
+		if constexpr ( std::is_same_v<T, float> ) {
+			cudaError_t const err = cuda_sum_along_axis_float( m_data_handle, out.m_data_handle,
+			                                                   m_rows, m_cols, 0 );
+			if ( err != cudaSuccess ) {
+				throw std::runtime_error( "CudaTensor::sum_along_axis(): cuda_sum_along_axis_float failed" );
+			}
+			return out;
+#if NEURAL_CUDA_ENABLED
+		} else if constexpr ( std::is_same_v<T, fp8> ) {
+			cudaError_t const err = cuda_sum_along_axis_fp8( m_data_handle, out.m_data_handle,
+			                                                 m_rows, m_cols, 0 );
+			if ( err != cudaSuccess ) {
+				throw std::runtime_error( "CudaTensor::sum_along_axis(): cuda_sum_along_axis_fp8 failed" );
+			}
+			return out;
+#endif
+		} else {
+			throw std::invalid_argument( "CudaTensor::sum_along_axis(): unsupported type" );
+		}
+	}
+	CudaTensor<T> out( m_rows, 1u, value_type{} );
+	if constexpr ( std::is_same_v<T, float> ) {
+		cudaError_t const err =
+		    cuda_sum_along_axis_float( m_data_handle, out.m_data_handle, m_rows, m_cols, 1 );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::sum_along_axis(): cuda_sum_along_axis_float failed" );
+		}
+		return out;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cudaError_t const err =
+		    cuda_sum_along_axis_fp8( m_data_handle, out.m_data_handle, m_rows, m_cols, 1 );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::sum_along_axis(): cuda_sum_along_axis_fp8 failed" );
+		}
+		return out;
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::sum_along_axis(): unsupported type" );
+	}
+}
+
+template <typename T>
+CudaTensor<T> CudaTensor<T>::max_along_axis( std::size_t axis ) const
+{
+	if ( axis != 0 && axis != 1 ) {
+		throw std::invalid_argument( "CudaTensor::max_along_axis(): axis must be 0 or 1" );
+	}
+	if ( size() == 0 || m_data_handle == nullptr ) {
+		return CudaTensor<T>{};
+	}
+	if ( axis == 0 ) {
+		CudaTensor<T> out( 1u, m_cols, value_type{} );
+		if constexpr ( std::is_same_v<T, float> ) {
+			cudaError_t const err = cuda_max_along_axis_float( m_data_handle, out.m_data_handle,
+			                                                   m_rows, m_cols, 0 );
+			if ( err != cudaSuccess ) {
+				throw std::runtime_error( "CudaTensor::max_along_axis(): cuda_max_along_axis_float failed" );
+			}
+			return out;
+#if NEURAL_CUDA_ENABLED
+		} else if constexpr ( std::is_same_v<T, fp8> ) {
+			cudaError_t const err = cuda_max_along_axis_fp8( m_data_handle, out.m_data_handle,
+			                                                 m_rows, m_cols, 0 );
+			if ( err != cudaSuccess ) {
+				throw std::runtime_error( "CudaTensor::max_along_axis(): cuda_max_along_axis_fp8 failed" );
+			}
+			return out;
+#endif
+		} else {
+			throw std::invalid_argument( "CudaTensor::max_along_axis(): unsupported type" );
+		}
+	}
+	CudaTensor<T> out( m_rows, 1u, value_type{} );
+	if constexpr ( std::is_same_v<T, float> ) {
+		cudaError_t const err =
+		    cuda_max_along_axis_float( m_data_handle, out.m_data_handle, m_rows, m_cols, 1 );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::max_along_axis(): cuda_max_along_axis_float failed" );
+		}
+		return out;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cudaError_t const err =
+		    cuda_max_along_axis_fp8( m_data_handle, out.m_data_handle, m_rows, m_cols, 1 );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::max_along_axis(): cuda_max_along_axis_fp8 failed" );
+		}
+		return out;
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::max_along_axis(): unsupported type" );
+	}
+}
+
+template <typename T>
+template <typename Generator>
+void CudaTensor<T>::randomize( Generator &generator ) noexcept
+{
+	if ( m_data_handle == nullptr || size() == 0 ) {
+		return;
+	}
+	std::vector<T> host( size() );
+	std::generate( host.begin(), host.end(), generator );
+	cudaMemcpy( m_data_handle, host.data(), size() * sizeof( T ), cudaMemcpyHostToDevice );
+}
+
+template <typename T>
+void CudaTensor<T>::randomize() noexcept
+{
+	std::random_device rd;
+	std::mt19937 gen( rd() );
+	std::uniform_real_distribution<double> dis( 0.0, 1.0 );
+	auto generator = [&]() { return static_cast<T>( dis( gen ) ); };
+	randomize( generator );
+}
+
+template <typename T>
+void CudaTensor<T>::randomizeHe( std::size_t fan_in ) noexcept
+{
+	if ( fan_in == 0 ) {
+		return;
+	}
+	double const scale = std::sqrt( 2.0 / static_cast<double>( fan_in ) );
+	std::random_device rd;
+	std::mt19937 gen( rd() );
+	std::uniform_real_distribution<double> dis( -scale, scale );
+	auto generator = [&]() { return static_cast<T>( dis( gen ) ); };
+	randomize( generator );
+}
+
+template <typename T>
+void CudaTensor<T>::copyToHost( T *host ) const
+{
+	if ( m_data_handle == nullptr || host == nullptr || size() == 0 ) {
+		return;
+	}
+	cudaError_t const err =
+	    cudaMemcpy( host, m_data_handle, size() * sizeof( T ), cudaMemcpyDeviceToHost );
+	if ( err != cudaSuccess ) {
+		throw std::runtime_error( "CudaTensor::copyToHost(): cudaMemcpy failed" );
+	}
+}
+
+} // namespace neural
+
+#endif

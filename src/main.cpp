@@ -1,10 +1,11 @@
-#include "neural_network.hpp"
+#include "cifar_demo.hpp"
+#include "mnist_demo.hpp"
 #include <iostream>
 
 int main()
 {
-	// Print confirmation message
 	std::cout << "Neural Network Initialized!" << std::endl;
-
+	// run_mnist_demo();
+	run_cifar10_demo();
 	return 0;
 }

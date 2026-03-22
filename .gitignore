@@ -1,3 +1,14 @@
+# Weight dumps / debug images
+debug_weights/
+
+# Datasets (large binaries; keep local only)
+data/
+
+# Profiling artifacts
+perf.data
+perf.data.*
+flame.svg
+
 # Build directories
 build/
 build_*/
@@ -32,8 +43,10 @@ _deps/
 .ninja_deps
 .ninja_deps
 
-# IDE
+# IDE / editor
 .idea/
+.vscode/
+.cursor/
 .vs/
 *.vcxproj*
 *.sln

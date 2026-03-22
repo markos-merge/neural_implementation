@@ -2,6 +2,7 @@
 #define NEURAL_IMPL_TENSOR_CPP
 
 #include <Eigen/Dense>
+#include <cmath>
 #include <iterator>
 #include <random>
 
@@ -34,6 +35,11 @@ class Tensor
 
 		value_type operator()( std::size_t row, std::size_t col );
 		value_type const operator()( std::size_t row, std::size_t col ) const;
+	
+		void assign( std::size_t row, std::size_t col, value_type value );
+
+		/// Copy \p other 's first row into row \p row of this tensor (same column count).
+		void assignTensorAsRow( std::size_t row, Tensor const &other );
 
 		Tensor<T> transpose() const;
 		Tensor<T> &transposeInPlace() noexcept;
@@ -42,10 +48,22 @@ class Tensor
 
 		Tensor matmul( Tensor const &other ) const;
 		Tensor &matmulInPlace( Tensor const &other );
+	
+		Tensor divideRowsWithCol( Tensor const &other ) const;
+		Tensor &divideRowsWithColInPlace( Tensor const &other );
+
+		/// Largest absolute value among all elements.
+		value_type maxCoeff() const;
 
 		Tensor operator+( Tensor const &other ) const;
 		Tensor &operator+=( Tensor const &other );
-		Tensor &addColwise( Tensor const &col );
+		Tensor operator-( Tensor const &other ) const;
+		Tensor &operator-=( Tensor const &other );
+		Tensor addColwise( Tensor const &col ) const;
+		Tensor &addColwiseInPlace( Tensor const &col );
+		/// For each row i, subtract col(i,0) from all entries in that row. col has shape
+		/// (rows(), 1).
+		Tensor subtractColwise( Tensor const &col ) const;
 		Tensor operator*( Tensor const &other ) const; // element-wise
 		Tensor &operator*=( Tensor const &other );
 		Tensor operator*( value_type scalar ) const;
@@ -54,16 +72,18 @@ class Tensor
 		Tensor cwiseGreater( value_type scalar ) const;
 		Tensor cwiseOneMinus() const;
 		Tensor cwiseSigmoid() const;
-
-		template <typename UnaryOperator>
-		Tensor cwiseApply( UnaryOperator unary_operator ) const;
+		Tensor cwiseExp() const;
+		Tensor cwiseLog() const;
 
 		value_type sum() const;
 		Tensor sum_along_axis( std::size_t axis ) const;
+		Tensor max_along_axis( std::size_t axis ) const;
 
 		template <typename Generator>
 		void randomize( Generator &generator ) noexcept;
 		void randomize() noexcept;
+		/// He initialization for ReLU: uniform(-sqrt(2/fan_in), sqrt(2/fan_in))
+		void randomizeHe( std::size_t fan_in ) noexcept;
 	private:
 		matrix_type m_mat;
 };
@@ -167,6 +187,26 @@ Tensor<T>::operator()( std::size_t row, std::size_t col ) const
 }
 
 template <typename T>
+void Tensor<T>::assign( std::size_t row, std::size_t col, value_type value )
+{
+	m_mat( row, col ) = value;
+}
+
+template <typename T>
+void Tensor<T>::assignTensorAsRow( std::size_t row, Tensor const &other )
+{
+	if ( row >= static_cast<std::size_t>( m_mat.rows() ) ) {
+		throw std::out_of_range( "Tensor::assignTensorAsRow(): row out of range" );
+	}
+	if ( other.m_mat.rows() < 1
+	     || static_cast<std::size_t>( other.m_mat.cols() ) != static_cast<std::size_t>( m_mat.cols() ) ) {
+		throw std::invalid_argument(
+		    "Tensor::assignTensorAsRow(): other must have rows>=1 and same cols()" );
+	}
+	m_mat.row( static_cast<Eigen::Index>( row ) ) = other.m_mat.row( 0 );
+}
+
+template <typename T>
 Tensor<T> Tensor<T>::transpose() const
 {
 	Tensor<T> result( *this );
@@ -211,6 +251,29 @@ Tensor<T> &Tensor<T>::matmulInPlace( Tensor const &other )
 }
 
 template <typename T>
+Tensor<T> Tensor<T>::divideRowsWithCol( Tensor const &other ) const
+{
+	return Tensor<T>(
+	    ( m_mat.array().colwise() / other.m_mat.col( 0 ).array() ).matrix().eval() );
+}
+
+template <typename T>
+Tensor<T> &Tensor<T>::divideRowsWithColInPlace( Tensor const &other )
+{
+	m_mat.array().colwise() /= other.m_mat.col( 0 ).array();
+	return *this;
+}
+
+template <typename T>
+typename Tensor<T>::value_type Tensor<T>::maxCoeff() const
+{
+	if ( m_mat.size() == 0 ) {
+		return value_type{};
+	}
+	return m_mat.cwiseAbs().maxCoeff();
+}
+
+template <typename T>
 Tensor<T> Tensor<T>::operator+( Tensor const &other ) const
 {
 	return Tensor<T>( ( m_mat + other.m_mat ).eval() );
@@ -224,11 +287,38 @@ Tensor<T> &Tensor<T>::operator+=( Tensor const &other )
 }
 
 template <typename T>
-Tensor<T> &Tensor<T>::addColwise( Tensor const &col )
+Tensor<T> Tensor<T>::operator-( Tensor const &other ) const
 {
-	// col is (O, 1), this is (B, O). Add col to each row: broadcast (1,O) over rows.
-	m_mat = ( m_mat + col.m_mat.transpose().replicate( rows(), 1 ) ).eval();
+	return Tensor<T>( ( m_mat - other.m_mat ).eval() );
+}
+
+template <typename T>
+Tensor<T> &Tensor<T>::operator-=( Tensor const &other )
+{
+	m_mat -= other.m_mat;
 	return *this;
+}
+
+template <typename T>
+Tensor<T> Tensor<T>::addColwise( Tensor const &col ) const
+{
+	// col is (cols(), 1); broadcast bias across batch rows (Eigen array + does not broadcast).
+	return Tensor<T>(
+	    ( m_mat.rowwise() + col.m_mat.col( 0 ).transpose() ).eval() );
+}
+
+template <typename T>
+Tensor<T> &Tensor<T>::addColwiseInPlace( Tensor const &col )
+{
+	m_mat.rowwise() += col.m_mat.col( 0 ).transpose();
+	return *this;
+}
+
+template <typename T>
+Tensor<T> Tensor<T>::subtractColwise( Tensor const &col ) const
+{
+	return Tensor<T>(
+	    ( m_mat.array().colwise() - col.m_mat.col( 0 ).array() ).matrix().eval() );
 }
 
 template <typename T>
@@ -276,6 +366,18 @@ Tensor<T> Tensor<T>::cwiseSigmoid() const
 }
 
 template <typename T>
+Tensor<T> Tensor<T>::cwiseExp() const
+{
+	return Tensor<T>( ( m_mat.array().exp() ).matrix().eval() );
+}
+
+template <typename T>
+Tensor<T> Tensor<T>::cwiseLog() const
+{
+	return Tensor<T>( ( m_mat.array().log() ).matrix().eval() );
+}
+
+template <typename T>
 T Tensor<T>::sum() const
 {
 	return m_mat.sum();
@@ -284,14 +386,19 @@ T Tensor<T>::sum() const
 template <typename T>
 Tensor<T> Tensor<T>::sum_along_axis( std::size_t axis ) const
 {
-	Tensor<T> result( axis == 0 ? 1 : rows(), axis == 0 ? cols() : 1 );
 	if ( axis == 0 ) {
-		result.m_mat = m_mat.colwise().sum();
-	} else {
-		result.m_mat = m_mat.rowwise().sum();
+		return Tensor<T>( m_mat.colwise().sum() );
 	}
+	return Tensor<T>( m_mat.rowwise().sum() );
+}
 
-	return result;
+template <typename T>
+Tensor<T> Tensor<T>::max_along_axis( std::size_t axis ) const
+{
+	if ( axis == 0 ) {
+		return Tensor<T>( m_mat.colwise().maxCoeff() );
+	}
+	return Tensor<T>( m_mat.rowwise().maxCoeff() );
 }
 
 template <typename T>
@@ -306,8 +413,21 @@ void Tensor<T>::randomize() noexcept
 {
 	std::random_device rd;
 	std::mt19937 gen( rd() );
-	std::uniform_real_distribution<T> dis( 0.0, 1.0 );
-	auto generator = [&]() { return dis( gen ); };
+	// std::uniform_real_distribution is only defined for float/double/long double;
+	// Eigen::half and other custom scalars use double + cast.
+	std::uniform_real_distribution<double> dis( 0.0, 1.0 );
+	auto generator = [&]() { return static_cast<T>( dis( gen ) ); };
+	randomize( generator );
+}
+
+template <typename T>
+void Tensor<T>::randomizeHe( std::size_t fan_in ) noexcept
+{
+	double const scale = std::sqrt( 2.0 / static_cast<double>( fan_in ) );
+	std::random_device rd;
+	std::mt19937 gen( rd() );
+	std::uniform_real_distribution<double> dis( -scale, scale );
+	auto generator = [&]() { return static_cast<T>( dis( gen ) ); };
 	randomize( generator );
 }
 } // namespace neural

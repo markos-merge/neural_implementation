@@ -4,12 +4,38 @@
 # C++ Standard: C++20
 # Build System: Ninja
 
-cmake_minimum_required(VERSION 3.16)
-project(neural_implementation)
+cmake_minimum_required(VERSION 3.18)
+project(neural_implementation LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+option(NEURAL_ENABLE_CUDA "Enable CUDA language and link CUDA runtime" ON)
+
+set(NEURAL_CUDA_FOUND OFF)
+if(NEURAL_ENABLE_CUDA)
+	include(CheckLanguage)
+	check_language(CUDA)
+	if(CMAKE_CUDA_COMPILER)
+		enable_language(CUDA)
+		set(CMAKE_CUDA_STANDARD 20)
+		set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+		if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+			# "native" requires CMake >= 3.24; see https://cmake.org/cmake/help/latest/variable/CMAKE_CUDA_ARCHITECTURES.html
+			if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
+				set(CMAKE_CUDA_ARCHITECTURES "native" CACHE STRING "CUDA GPU architectures (semicolon-separated)")
+			else()
+				set(CMAKE_CUDA_ARCHITECTURES "75" CACHE STRING "CUDA GPU architectures (semicolon-separated)")
+			endif()
+		endif()
+		find_package(CUDAToolkit REQUIRED)
+		set(NEURAL_CUDA_FOUND ON)
+		message(STATUS "CUDA enabled (architectures: ${CMAKE_CUDA_ARCHITECTURES})")
+	else()
+		message(STATUS "CUDA compiler not found; building without CUDA")
+	endif()
+endif()
 
 # Eigen
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
@@ -32,21 +58,39 @@ add_library(neural_impl_lib
     src/tensor.cpp
 )
 
+if(NEURAL_CUDA_FOUND)
+	target_sources(neural_impl_lib PRIVATE src/cuda_runtime.cu src/cublas_handle.cpp)
+	# cublas: SGEMM/DGEMM etc.; cublasLt: mixed precision / FP8 matmul (your custom FP8 path)
+	target_link_libraries(neural_impl_lib PUBLIC CUDA::cudart CUDA::cublas CUDA::cublasLt)
+	target_compile_definitions(neural_impl_lib PUBLIC NEURAL_CUDA_ENABLED=1)
+else()
+	target_sources(neural_impl_lib PRIVATE src/cuda_runtime_stub.cpp)
+	target_compile_definitions(neural_impl_lib PUBLIC NEURAL_CUDA_ENABLED=0)
+endif()
+
 target_include_directories(neural_impl_lib PUBLIC include)
 target_link_libraries(neural_impl_lib PUBLIC Eigen3::Eigen)
 
 # Main executable
-add_executable(neural_implementation src/main.cpp)
+add_executable(neural_implementation src/main.cpp src/mnist_demo.cpp src/cifar_demo.cpp)
 target_link_libraries(neural_implementation PRIVATE neural_impl_lib)
 
 # Tests
 add_executable(tests
     tests/test_tensor.cpp
+    tests/test_cuda_tensor.cpp
+    tests/test_cuda_nn.cpp
+    tests/test_cuda_runtime.cpp
     tests/test_linear_layer.cpp
     tests/test_relu_layer.cpp
     tests/test_sigmoid_layer.cpp
+    tests/test_softmax_layer.cpp
+    tests/test_loss.cpp
+    tests/test_sequential_nn.cpp
+    tests/test_sgd_optimizer.cpp
 )
 target_link_libraries(tests PRIVATE Catch2::Catch2WithMain neural_impl_lib)
+target_include_directories(tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 include(CTest)
 enable_testing()
 if(NOT Catch2_FOUND)

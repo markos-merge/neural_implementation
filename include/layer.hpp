@@ -8,4 +8,10 @@ concept LayerLike = TensorLike<Tensor> && requires( Layer l, Tensor const &t ) {
 	{ l.backward( t ) } -> std::convertible_to<Tensor>;
 };
 
+template < typename Layer, typename Tensor >
+concept UpdateableLayer = LayerLike<Layer, Tensor> && requires( Layer l, Tensor &param, Tensor &grad ) {
+	{ l.getGradWeights() } -> std::convertible_to<Tensor>;
+	{ l.getGradBias() } -> std::convertible_to<Tensor>;
+};
+
 #endif
