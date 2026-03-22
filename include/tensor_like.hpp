@@ -22,6 +22,10 @@ concept TensorLike = requires( MatrixType m ) {
 	} -> std::convertible_to<typename MatrixType::value_type const>;
 
 	{
+		m.assign( static_cast<typename MatrixType::value_type>( 0. ) )
+	};
+
+	{
 		m.transpose()
 	} -> std::convertible_to<MatrixType>;
 	
@@ -73,7 +77,11 @@ concept TensorLike = requires( MatrixType m ) {
 	} -> std::convertible_to<MatrixType>;
 
 	{
-		m.sum() 
+		m.sum()
+	} -> std::convertible_to<typename MatrixType::value_type>;
+
+	{
+		m.asum()
 	} -> std::convertible_to<typename MatrixType::value_type>;
 
 	{

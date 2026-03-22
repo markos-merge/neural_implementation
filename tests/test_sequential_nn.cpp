@@ -241,7 +241,7 @@ TEST_CASE( "SequentialNN trainStep softmax cross-entropy matches standalone loss
 
 	Tensor<float> logits = nn.forward( input );
 	SoftmaxCrossEntropyLoss<Tensor<float>> standalone;
-	auto const expected = standalone.forward( logits, target );
+	auto const expected = standalone.forward( logits, target )( 0, 0 );
 
 	REQUIRE_THAT( loss, WithinAbs( expected, eps ) );
 }

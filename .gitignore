@@ -25,6 +25,9 @@ cmake_install.cmake
 # FetchContent / External dependencies (re-downloaded on configure)
 _deps/
 
+# GCC precompiled headers (e.g. tensor.hpp.gch next to a header)
+*.gch
+
 # Compiled objects and binaries
 *.o
 *.obj

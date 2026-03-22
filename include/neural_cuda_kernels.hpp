@@ -81,15 +81,13 @@ cudaError_t cuda_cwise_exp_fp8( __nv_fp8_e4m3 const *in, __nv_fp8_e4m3 *out, std
 cudaError_t cuda_cwise_log_float( float const *in, float *out, std::size_t n );
 cudaError_t cuda_cwise_log_fp8( __nv_fp8_e4m3 const *in, __nv_fp8_e4m3 *out, std::size_t n );
 
-/// Total sum to host (`0` if `n == 0`).
 cudaError_t cuda_sum_float( float const *in, std::size_t n, float *out_host );
 cudaError_t cuda_sum_fp8( __nv_fp8_e4m3 const *in, std::size_t n, float *out_host );
 
-/// `axis == 0`: colwise sum/max → `out` is `1 x cols` row-major. `axis == 1`: rowwise → `rows x 1`.
 cudaError_t cuda_sum_along_axis_float( float const *in, float *out, std::size_t rows, std::size_t cols,
-                                       int axis );
+                                       int axis, bool transpose_out );
 cudaError_t cuda_sum_along_axis_fp8( __nv_fp8_e4m3 const *in, __nv_fp8_e4m3 *out, std::size_t rows,
-                                     std::size_t cols, int axis );
+                                     std::size_t cols, int axis, bool transpose_out );
 cudaError_t cuda_max_along_axis_float( float const *in, float *out, std::size_t rows, std::size_t cols,
                                        int axis );
 cudaError_t cuda_max_along_axis_fp8( __nv_fp8_e4m3 const *in, __nv_fp8_e4m3 *out, std::size_t rows,

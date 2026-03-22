@@ -156,13 +156,13 @@ cudaError_t cuda_sum_fp8( __nv_fp8_e4m3 const *, std::size_t, float *out_host )
 	return cudaSuccess;
 }
 
-cudaError_t cuda_sum_along_axis_float( float const *, float *, std::size_t, std::size_t, int )
+cudaError_t cuda_sum_along_axis_float( float const *, float *, std::size_t, std::size_t, int, bool )
 {
 	return cudaSuccess;
 }
 
 cudaError_t cuda_sum_along_axis_fp8( __nv_fp8_e4m3 const *, __nv_fp8_e4m3 *, std::size_t, std::size_t,
-                                     int )
+                                     int, bool )
 {
 	return cudaSuccess;
 }

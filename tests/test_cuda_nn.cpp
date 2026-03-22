@@ -1,5 +1,6 @@
 #include "cross_entropy_softmax_loss.hpp"
 #include "cuda_tensor.hpp"
+#include "layer_wiring_helpers.hpp"
 #include "linear_layer.hpp"
 #include "mse_loss.hpp"
 #include "tensor.hpp"
@@ -20,6 +21,7 @@ using neural::SequentialNN;
 using neural::SGDOptimizer;
 using neural::SoftmaxCrossEntropyLoss;
 using neural::Tensor;
+using neural::test::wire_layer;
 using Catch::Matchers::WithinAbs;
 
 static_assert( TensorLike<CudaTensor<float>> );
@@ -53,10 +55,14 @@ TEST_CASE( "LinearLayer CudaTensor forward output shape", "[cuda][linear_layer][
 		SKIP( "No CUDA device available" );
 	}
 	LinearLayer<CudaTensor<float>> layer( 3, 5 );
-	CudaTensor<float> input( 2, 3, 1.0f );
-	CudaTensor<float> output = layer.forward( input );
-	REQUIRE( output.rows() == 2u );
-	REQUIRE( output.cols() == 5u );
+	CudaTensor<float> in_buf( 2, 3, 1.0f );
+	CudaTensor<float> out_buf( 2, 5 );
+	CudaTensor<float> g_out( 2, 5 );
+	CudaTensor<float> g_in( 2, 3 );
+	wire_layer( layer, in_buf, out_buf, g_out, g_in );
+	layer.forward();
+	REQUIRE( out_buf.rows() == 2u );
+	REQUIRE( out_buf.cols() == 5u );
 }
 
 TEST_CASE( "LinearLayer CudaTensor forward matches CPU (1x1)", "[cuda][linear_layer][numerical]" )
@@ -70,17 +76,25 @@ TEST_CASE( "LinearLayer CudaTensor forward matches CPU (1x1)", "[cuda][linear_la
 	CudaTensor<float> input( 1, 1, 3.f );
 
 	LinearLayer<CudaTensor<float>> layer( weights, bias );
-	CudaTensor<float> output = layer.forward( input );
+	CudaTensor<float> out_buf( 1, 1 );
+	CudaTensor<float> g_out( 1, 1 );
+	CudaTensor<float> g_in( 1, 1 );
+	wire_layer( layer, input, out_buf, g_out, g_in );
+	layer.forward();
 
 	Tensor<float> w_cpu( 1, 1, 2.f );
 	Tensor<float> b_cpu( 1, 1, 0.5f );
 	Tensor<float> x_cpu( 1, 1, 3.f );
 	LinearLayer<Tensor<float>> layer_cpu( w_cpu, b_cpu );
-	Tensor<float> const out_cpu = layer_cpu.forward( x_cpu );
+	Tensor<float> out_cpu_buf( 1, 1 );
+	Tensor<float> g_out_cpu( 1, 1 );
+	Tensor<float> g_in_cpu( 1, 1 );
+	wire_layer( layer_cpu, x_cpu, out_cpu_buf, g_out_cpu, g_in_cpu );
+	layer_cpu.forward();
 
-	REQUIRE( output.rows() == 1u );
-	REQUIRE( output.cols() == 1u );
-	REQUIRE_THAT( output( 0, 0 ), WithinAbs( out_cpu( 0, 0 ), eps ) );
+	REQUIRE( out_buf.rows() == 1u );
+	REQUIRE( out_buf.cols() == 1u );
+	REQUIRE_THAT( out_buf( 0, 0 ), WithinAbs( out_cpu_buf( 0, 0 ), eps ) );
 }
 
 TEST_CASE( "LinearLayer CudaTensor forward matches CPU (2x2 matmul)", "[cuda][linear_layer][numerical]" )
@@ -96,16 +110,24 @@ TEST_CASE( "LinearLayer CudaTensor forward matches CPU (2x2 matmul)", "[cuda][li
 	CudaTensor<float> input( 1, 2, x_data.begin(), x_data.end() );
 
 	LinearLayer<CudaTensor<float>> layer( weights, bias );
-	CudaTensor<float> output = layer.forward( input );
+	CudaTensor<float> out_buf( 1, 2 );
+	CudaTensor<float> g_out( 1, 2 );
+	CudaTensor<float> g_in( 1, 2 );
+	wire_layer( layer, input, out_buf, g_out, g_in );
+	layer.forward();
 
 	Tensor<float> w_cpu( 2, 2, w_data.begin(), w_data.end() );
 	Tensor<float> b_cpu( 2, 1, b_data.begin(), b_data.end() );
 	Tensor<float> x_cpu( 1, 2, x_data.begin(), x_data.end() );
 	LinearLayer<Tensor<float>> layer_cpu( w_cpu, b_cpu );
-	Tensor<float> const out_cpu = layer_cpu.forward( x_cpu );
+	Tensor<float> out_cpu_buf( 1, 2 );
+	Tensor<float> g_out_cpu( 1, 2 );
+	Tensor<float> g_in_cpu( 1, 2 );
+	wire_layer( layer_cpu, x_cpu, out_cpu_buf, g_out_cpu, g_in_cpu );
+	layer_cpu.forward();
 
-	REQUIRE_THAT( output( 0, 0 ), WithinAbs( out_cpu( 0, 0 ), eps ) );
-	REQUIRE_THAT( output( 0, 1 ), WithinAbs( out_cpu( 0, 1 ), eps ) );
+	REQUIRE_THAT( out_buf( 0, 0 ), WithinAbs( out_cpu_buf( 0, 0 ), eps ) );
+	REQUIRE_THAT( out_buf( 0, 1 ), WithinAbs( out_cpu_buf( 0, 1 ), eps ) );
 }
 
 TEST_CASE( "LinearLayer CudaTensor backward gradient shapes", "[cuda][linear_layer][backward]" )
@@ -114,12 +136,15 @@ TEST_CASE( "LinearLayer CudaTensor backward gradient shapes", "[cuda][linear_lay
 		SKIP( "No CUDA device available" );
 	}
 	LinearLayer<CudaTensor<float>> layer( 3, 5 );
-	CudaTensor<float> input( 2, 3, 1.0f );
-	layer.forward( input );
-	CudaTensor<float> grad_output( 2, 5, 1.0f );
-	CudaTensor<float> grad_input = layer.backward( grad_output );
-	REQUIRE( grad_input.rows() == 2u );
-	REQUIRE( grad_input.cols() == 3u );
+	CudaTensor<float> in_buf( 2, 3, 1.0f );
+	CudaTensor<float> out_buf( 2, 5 );
+	CudaTensor<float> g_out( 2, 5, 1.0f );
+	CudaTensor<float> g_in( 2, 3 );
+	wire_layer( layer, in_buf, out_buf, g_out, g_in );
+	layer.forward();
+	layer.backward();
+	REQUIRE( g_in.rows() == 2u );
+	REQUIRE( g_in.cols() == 3u );
 	REQUIRE( layer.getGradWeights().rows() == 3u );
 	REQUIRE( layer.getGradWeights().cols() == 5u );
 	REQUIRE( layer.getGradBias().rows() == 5u );
@@ -162,7 +187,7 @@ TEST_CASE( "SequentialNN CudaTensor trainStep softmax CE matches standalone", "[
 	auto const loss = nn.trainStep( input, target );
 	CudaTensor<float> logits = nn.forward( input );
 	SoftmaxCrossEntropyLoss<CudaTensor<float>> standalone;
-	auto const expected = standalone.forward( logits, target );
+	auto const expected = standalone.forward( logits, target )( 0, 0 );
 	REQUIRE_THAT( loss, WithinAbs( expected, eps ) );
 }
 

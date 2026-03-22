@@ -6,7 +6,6 @@
 #include "sequential_nn.hpp"
 #include "sgd_optimizer.hpp"
 #include "tensor.hpp"
-#include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <iomanip>
@@ -18,7 +17,6 @@ namespace {
 using Tensor_t = neural::Tensor<float>;
 
 int const PROGRESS_WIDTH = 40;
-auto const THROTTLE_MS = std::chrono::milliseconds( 100 );
 
 void draw_progress_bar( std::size_t current, std::size_t total, float loss,
                        char const *prefix = "" )
@@ -112,17 +110,14 @@ void run_mnist_demo()
 	opt.m_epochs = 5000;
 
 	opt.train( train_data.images, train_data.labels,
-	           [last = std::chrono::steady_clock::now()](
-	               std::size_t epoch, std::size_t epoch_max, std::size_t batch_idx,
-	               std::size_t batch_max, float loss ) mutable {
-		           auto now = std::chrono::steady_clock::now();
-		           bool is_last_batch = ( batch_idx + 1 >= batch_max );
-		           if ( is_last_batch || now - last >= THROTTLE_MS ) {
-			           last = now;
-			           std::string prefix = "Epoch " + std::to_string( epoch + 1 ) + "/" +
-			                               std::to_string( epoch_max ) + " ";
-			           draw_progress_bar( batch_idx, batch_max, loss, prefix.c_str() );
+	           []( std::size_t epoch, std::size_t epoch_max, std::size_t batch_idx,
+	               std::size_t batch_max, float loss ) {
+		           if ( batch_idx + 1 < batch_max ) {
+			           return;
 		           }
+		           std::string const prefix = "Epoch " + std::to_string( epoch + 1 ) + "/" +
+		                                       std::to_string( epoch_max ) + " ";
+		           draw_progress_bar( epoch + 1, epoch_max, loss, prefix.c_str() );
 	           } );
 	std::cout << "\n";
 

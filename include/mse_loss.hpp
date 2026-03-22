@@ -12,7 +12,8 @@ class MSELoss
 	public:
 		MSELoss();
 
-		typename Tensor::value_type forward( Tensor const &pred, Tensor const &target );
+		/// Returns a 1×1 tensor with mean squared error.
+		Tensor forward( Tensor const &pred, Tensor const &target );
 		Tensor backward();
 
 	private:
@@ -26,8 +27,7 @@ MSELoss<Tensor>::MSELoss()
 }
 
 template <typename Tensor>
-typename Tensor::value_type MSELoss<Tensor>::forward( Tensor const &pred,
-                                                      Tensor const &target )
+Tensor MSELoss<Tensor>::forward( Tensor const &pred, Tensor const &target )
 {
 	if ( pred.rows() != target.rows() || pred.cols() != target.cols() ) {
 		throw std::invalid_argument(
@@ -39,8 +39,9 @@ typename Tensor::value_type MSELoss<Tensor>::forward( Tensor const &pred,
 	m_scale = static_cast<typename Tensor::value_type>( 2.0 ) / n;
 
 	// L = (1/n) * sum((pred - target)^2)
-	auto squared = m_diff * m_diff;
-	return squared.sum() / n;
+	Tensor const squared = m_diff * m_diff;
+	auto const inv_n = static_cast<typename Tensor::value_type>( 1.0 ) / n;
+	return Tensor( 1u, 1u, squared.sum() * inv_n );
 }
 
 template <typename Tensor>

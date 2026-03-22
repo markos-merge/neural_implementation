@@ -1157,8 +1157,9 @@ cudaError_t cuda_cwise_log_fp8( fp8 const *in, fp8 *out, std::size_t n )
 }
 
 cudaError_t cuda_sum_along_axis_float( float const *in, float *out, std::size_t rows, std::size_t cols,
-                                       int axis )
+                                       int axis, bool transpose_out )
 {
+	(void)transpose_out;
 	if ( in == nullptr || out == nullptr ) {
 		return cudaErrorInvalidValue;
 	}
@@ -1190,8 +1191,9 @@ cudaError_t cuda_sum_along_axis_float( float const *in, float *out, std::size_t 
 }
 
 cudaError_t cuda_sum_along_axis_fp8( fp8 const *in, fp8 *out, std::size_t rows, std::size_t cols,
-                                     int axis )
+                                     int axis, bool transpose_out )
 {
+	(void)transpose_out;
 	if ( in == nullptr || out == nullptr ) {
 		return cudaErrorInvalidValue;
 	}

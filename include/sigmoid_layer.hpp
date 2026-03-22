@@ -1,42 +1,43 @@
 #ifndef SIGMOID_LAYER_HPP
 #define SIGMOID_LAYER_HPP
 #include "tensor_like.hpp"
+#include "layer_base.hpp"
 
 namespace neural {
 
 template <typename Tensor>
-class SigmoidLayer
+class SigmoidLayer : public LayerBase< Tensor >
 {
 	static_assert( TensorLike<Tensor>, "Tensor must be a TensorLike type" );
 	public:
 		SigmoidLayer();
 
-		Tensor forward( Tensor const &input );
-		Tensor backward( Tensor const &grad_output );
+		Tensor *forward();
+		Tensor *backward();
+
 	private:
-	// Cache for backward pass
 		Tensor m_output;
 };
 
 template <typename Tensor >
-SigmoidLayer<Tensor>::SigmoidLayer()
+SigmoidLayer<Tensor>::SigmoidLayer() = default;
+
+template <typename Tensor >
+Tensor *SigmoidLayer<Tensor>::forward()
 {
+	m_output = this->getInput()->cwiseSigmoid();
+	*this->getOutput() = m_output;
+	return this->getOutput();
 }
 
 template <typename Tensor >
-Tensor SigmoidLayer<Tensor>::forward( Tensor const &input )
+Tensor *SigmoidLayer<Tensor>::backward()
 {
-	m_output = input.cwiseSigmoid();
-
-	return m_output;
+	*this->getGradOutput() =
+	    ( *this->getGradInput() ) * m_output * m_output.cwiseOneMinus();
+	return this->getGradOutput();
 }
 
-template <typename Tensor >
-Tensor SigmoidLayer<Tensor>::backward( Tensor const &grad_output )
-{
-	return grad_output * m_output * m_output.cwiseOneMinus();
-}
-
-}
+} // namespace neural
 
 #endif

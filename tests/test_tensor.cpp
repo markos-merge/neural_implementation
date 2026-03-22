@@ -25,3 +25,18 @@ TEST_CASE( "Tensor maxCoeff empty tensor", "[tensor][maxCoeff]" )
 	Tensor<float> const t;
 	REQUIRE( t.maxCoeff() == 0.f );
 }
+
+TEST_CASE( "Tensor asum matches sum of absolute values", "[tensor][asum]" )
+{
+	std::vector<float> const data = { 1.f, -2.f, 3.f };
+	Tensor<float> const t( 1, 3, data.begin(), data.end() );
+	REQUIRE_THAT( t.asum(), WithinAbs( 6.f, 1e-6f ) );
+}
+
+TEST_CASE( "Tensor assign scalar fills all elements", "[tensor][assign]" )
+{
+	Tensor<float> t( 2, 2, 1.f );
+	t.assign( 0.f );
+	REQUIRE_THAT( t( 0, 0 ), WithinAbs( 0.f, 1e-6f ) );
+	REQUIRE_THAT( t( 1, 1 ), WithinAbs( 0.f, 1e-6f ) );
+}

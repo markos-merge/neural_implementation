@@ -105,11 +105,6 @@ void SGDOptimizer<Tensor, NN>::train( std::vector< Tensor > &inputs,
 	std::size_t const total_batches =
 	    ( inputs.size() + m_batch_size - 1 ) / m_batch_size;
 
-	Tensor batch_inputs( m_batch_size, inputs[0].cols() );
-	Tensor batch_targets( m_batch_size, targets[0].cols() );
-
-	Tensor final_batch_inputs( inputs.size()%m_batch_size, inputs[0].cols() );
-	Tensor final_batch_targets( inputs.size()%m_batch_size, targets[0].cols() );
 	for( std::size_t epoch = 0; epoch < this->m_epochs; ++epoch ) {
 		std::vector< std::size_t > batch_indices( inputs.size() );
 		std::iota( batch_indices.begin(), batch_indices.end(), 0 );
@@ -122,19 +117,12 @@ void SGDOptimizer<Tensor, NN>::train( std::vector< Tensor > &inputs,
 			std::size_t const cur_batch_size = std::min( m_batch_size, inputs.size() - i );
 			if ( cur_batch_size == 0 )
 				continue;
-			if ( i + m_batch_size > inputs.size() ) {
-				detail::copy_batch_to_tensor( final_batch_inputs, inputs, batch_indices,
-				                              i, inputs.size()%m_batch_size );
-				detail::copy_batch_to_tensor( final_batch_targets, targets,
-				                              batch_indices, i, inputs.size()%m_batch_size );
-				loss = m_nn.trainStep( final_batch_inputs, final_batch_targets );
-			} else {
-				detail::copy_batch_to_tensor( batch_inputs, inputs, batch_indices, i,
-				                              m_batch_size );
-				detail::copy_batch_to_tensor( batch_targets, targets, batch_indices, i,
-				                              cur_batch_size );
-				loss = m_nn.trainStep( batch_inputs, batch_targets );
-			}
+			m_nn.ensureBuffersForShape( cur_batch_size, inputs[0].cols() );
+			detail::copy_batch_to_tensor( *m_nn.inputLatch().input(), inputs,
+			                              batch_indices, i, cur_batch_size );
+			detail::copy_batch_to_tensor( m_nn.targetBuffer(), targets, batch_indices, i,
+			                              cur_batch_size );
+			loss = m_nn.trainStep();
 
 			applyStep();
 

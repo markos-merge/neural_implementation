@@ -1,45 +1,48 @@
 #ifndef SOFTMAX_LAYER_HPP
 #define SOFTMAX_LAYER_HPP
 #include "tensor_like.hpp"
+#include "layer_base.hpp"
 
 namespace neural {
 
 template <typename Tensor>
-class SoftmaxLayer
+class SoftmaxLayer : public LayerBase< Tensor >
 {
+	static_assert( TensorLike<Tensor>, "Tensor must be a TensorLike type" );
 	public:
-		SoftmaxLayer();
-	
-		Tensor forward( Tensor const &input );
-		Tensor backward( Tensor const &grad_output );
+		SoftmaxLayer() = default;
+
+		Tensor *forward();
+		Tensor *backward();
+
 	private:
-		Tensor m_input;
-		Tensor m_output;
+		Tensor m_probs;
 };
 
-template <typename Tensor >
-SoftmaxLayer<Tensor>::SoftmaxLayer()
+template <typename Tensor>
+Tensor *SoftmaxLayer<Tensor>::forward()
 {
+	Tensor const &input = *this->getInput();
+	Tensor const row_max = input.max_along_axis( 1 );
+	Tensor shifted = input.subtractColwise( row_max );
+	Tensor exp_shifted = shifted.cwiseExp();
+	Tensor const sum_exp = exp_shifted.sum_along_axis( 1 );
+	m_probs = exp_shifted;
+	m_probs.divideRowsWithColInPlace( sum_exp );
+	*this->getOutput() = m_probs;
+	return this->getOutput();
 }
 
-template <typename Tensor >
-Tensor SoftmaxLayer<Tensor>::forward( Tensor const &input )
+template <typename Tensor>
+Tensor *SoftmaxLayer<Tensor>::backward()
 {
-	m_input = input;
-	m_output = m_input.cwiseExp();
-	Tensor sum = m_output.sum_along_axis( 1 );
-	m_output.divideRowsWithColInPlace( sum );
-	
-	return m_output;
+	Tensor const &grad = *this->getGradInput();
+	Tensor const dot = ( grad * m_probs ).sum_along_axis( 1 );
+	Tensor const diff = grad.subtractColwise( dot );
+	*this->getGradOutput() = m_probs * diff;
+	return this->getGradOutput();
 }
 
-template <typename Tensor >
-Tensor SoftmaxLayer<Tensor>::backward( Tensor const &grad_output )
-{
-	Tensor const dot = ( grad_output * m_output ).sum_along_axis( 1 );
-	Tensor const diff = grad_output.subtractColwise( dot );
-	return m_output * diff;
-}
-}
+} // namespace neural
 
 #endif

@@ -31,7 +31,7 @@ TEST_CASE( "MSELoss forward value when pred equals target", "[mse_loss][forward]
 
 	auto const L = loss.forward( pred, target );
 
-	REQUIRE_THAT( L, WithinAbs( 0.0f, eps ) );
+	REQUIRE_THAT( L( 0, 0 ), WithinAbs( 0.0f, eps ) );
 }
 
 TEST_CASE( "MSELoss forward value for known difference", "[mse_loss][forward][numerical]" )
@@ -47,7 +47,7 @@ TEST_CASE( "MSELoss forward value for known difference", "[mse_loss][forward][nu
 
 	auto const L = loss.forward( pred, target );
 
-	REQUIRE_THAT( L, WithinAbs( 4.0f, eps ) );
+	REQUIRE_THAT( L( 0, 0 ), WithinAbs( 4.0f, eps ) );
 }
 
 TEST_CASE( "MSELoss forward value for batch", "[mse_loss][forward][numerical]" )
@@ -63,7 +63,7 @@ TEST_CASE( "MSELoss forward value for batch", "[mse_loss][forward][numerical]" )
 
 	auto const L = loss.forward( pred, target );
 
-	REQUIRE_THAT( L, WithinAbs( 7.5f, eps ) );
+	REQUIRE_THAT( L( 0, 0 ), WithinAbs( 7.5f, eps ) );
 }
 
 TEST_CASE( "MSELoss backward gradient shape", "[mse_loss][backward][shape]" )
@@ -139,7 +139,9 @@ TEST_CASE( "SoftmaxCrossEntropyLoss forward uniform logits one-hot class 0", "[s
 	auto const L = loss.forward( logits, target );
 	float const expected = std::log( 3.0f );
 
-	REQUIRE_THAT( L, WithinAbs( expected, 1e-4f ) );
+	REQUIRE( L.rows() == 1u );
+	REQUIRE( L.cols() == 1u );
+	REQUIRE_THAT( L( 0, 0 ), WithinAbs( expected, 1e-4f ) );
 }
 
 TEST_CASE( "SoftmaxCrossEntropyLoss backward matches p minus t scaled", "[softmax_ce][backward][numerical]" )
@@ -172,7 +174,7 @@ TEST_CASE( "SoftmaxCrossEntropyLoss batch mean over two rows", "[softmax_ce][for
 	auto const L = loss.forward( logits, target );
 	float const row_ce = std::log( 3.0f );
 
-	REQUIRE_THAT( L, WithinAbs( row_ce, 1e-4f ) );
+	REQUIRE_THAT( L( 0, 0 ), WithinAbs( row_ce, 1e-4f ) );
 }
 
 TEST_CASE( "SoftmaxCrossEntropyLoss forward throws on shape mismatch", "[softmax_ce][forward][validation]" )

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <iterator>
 #include <random>
+#include <stdexcept>
 
 namespace neural {
 
@@ -37,8 +38,9 @@ class Tensor
 		value_type const operator()( std::size_t row, std::size_t col ) const;
 	
 		void assign( std::size_t row, std::size_t col, value_type value );
+		/// Fill every element with \p value (no-op if empty).
+		void assign( value_type value );
 
-		/// Copy \p other 's first row into row \p row of this tensor (same column count).
 		void assignTensorAsRow( std::size_t row, Tensor const &other );
 
 		Tensor<T> transpose() const;
@@ -48,11 +50,13 @@ class Tensor
 
 		Tensor matmul( Tensor const &other ) const;
 		Tensor &matmulInPlace( Tensor const &other );
-	
+
+		Tensor &matmulInPlace( Tensor const &m1, Tensor const &m2, bool transpose_first = false,
+		                       bool transpose_second = false );
+
 		Tensor divideRowsWithCol( Tensor const &other ) const;
 		Tensor &divideRowsWithColInPlace( Tensor const &other );
 
-		/// Largest absolute value among all elements.
 		value_type maxCoeff() const;
 
 		Tensor operator+( Tensor const &other ) const;
@@ -61,34 +65,36 @@ class Tensor
 		Tensor &operator-=( Tensor const &other );
 		Tensor addColwise( Tensor const &col ) const;
 		Tensor &addColwiseInPlace( Tensor const &col );
-		/// For each row i, subtract col(i,0) from all entries in that row. col has shape
-		/// (rows(), 1).
 		Tensor subtractColwise( Tensor const &col ) const;
-		Tensor operator*( Tensor const &other ) const; // element-wise
+		Tensor operator*( Tensor const &other ) const;
 		Tensor &operator*=( Tensor const &other );
 		Tensor operator*( value_type scalar ) const;
 		Tensor &operator*=( value_type scalar );
 
 		Tensor cwiseGreater( value_type scalar ) const;
+		Tensor &cwiseGreaterInPlace( Tensor const &other, value_type scalar );
 		Tensor cwiseOneMinus() const;
 		Tensor cwiseSigmoid() const;
 		Tensor cwiseExp() const;
 		Tensor cwiseLog() const;
 
 		value_type sum() const;
-		Tensor sum_along_axis( std::size_t axis ) const;
+		value_type asum() const;
+		Tensor sumAlongAxis( std::size_t axis, bool transpose_out = false ) const;
+		Tensor sum_along_axis( std::size_t axis ) const { return sumAlongAxis( axis, false ); }
+
+		Tensor &sumAlongAxisInPlace( Tensor const &src, std::size_t axis, bool transpose_out = false );
+
 		Tensor max_along_axis( std::size_t axis ) const;
 
 		template <typename Generator>
 		void randomize( Generator &generator ) noexcept;
 		void randomize() noexcept;
-		/// He initialization for ReLU: uniform(-sqrt(2/fan_in), sqrt(2/fan_in))
 		void randomizeHe( std::size_t fan_in ) noexcept;
 	private:
 		matrix_type m_mat;
 };
 
-/***************** Implementation  **********************/
 template <typename T>
 Tensor<T>::Tensor() noexcept : m_mat( 0, 0 )
 {
@@ -193,6 +199,15 @@ void Tensor<T>::assign( std::size_t row, std::size_t col, value_type value )
 }
 
 template <typename T>
+void Tensor<T>::assign( value_type value )
+{
+	if ( m_mat.size() == 0 ) {
+		return;
+	}
+	m_mat.setConstant( value );
+}
+
+template <typename T>
 void Tensor<T>::assignTensorAsRow( std::size_t row, Tensor const &other )
 {
 	if ( row >= static_cast<std::size_t>( m_mat.rows() ) ) {
@@ -251,6 +266,64 @@ Tensor<T> &Tensor<T>::matmulInPlace( Tensor const &other )
 }
 
 template <typename T>
+Tensor<T> &Tensor<T>::matmulInPlace( Tensor const &m1, Tensor const &m2, bool transpose_first,
+                                     bool transpose_second )
+{
+	auto const throw_dim = [] {
+		throw std::invalid_argument(
+		    "Tensor::matmulInPlace(m1,m2,transpose_first,transpose_second): incompatible dimensions" );
+	};
+	auto const throw_alias = [] {
+		throw std::runtime_error(
+		    "Tensor::matmulInPlace(m1,m2,transpose_first,transpose_second): self-aliasing is not supported" );
+	};
+
+	if ( transpose_first && transpose_second ) {
+		if ( m1.rows() != m2.cols() || m1.cols() != rows() || m2.rows() != cols() ) {
+			throw_dim();
+		}
+		if ( this != &m1 && this != &m2 ) {
+			m_mat = ( m1.m_mat.transpose() * m2.m_mat.transpose() ).eval();
+		} else {
+			throw_alias();
+		}
+		return *this;
+	}
+	if ( transpose_first ) {
+		if ( m1.rows() != m2.rows() || m1.cols() != rows() || m2.cols() != cols() ) {
+			throw_dim();
+		}
+		if ( this != &m1 && this != &m2 ) {
+			m_mat = ( m1.m_mat.transpose() * m2.m_mat ).eval();
+		} else {
+			throw_alias();
+		}
+		return *this;
+	}
+	if ( transpose_second ) {
+		if ( m1.cols() != m2.cols() || m1.rows() != rows() || m2.rows() != cols() ) {
+			throw_dim();
+		}
+		if ( this != &m1 && this != &m2 ) {
+			m_mat = ( m1.m_mat * m2.m_mat.transpose() ).eval();
+		} else {
+			throw_alias();
+		}
+		return *this;
+	}
+	if ( m1.cols() != m2.rows() || m1.rows() != rows() || m2.cols() != cols() ) {
+		throw_dim();
+	}
+	if ( this != &m1 && this != &m2 ) {
+		m_mat = ( m1.m_mat * m2.m_mat ).eval();
+	} else {
+		throw_alias();
+	}
+
+	return *this;
+}
+
+template <typename T>
 Tensor<T> Tensor<T>::divideRowsWithCol( Tensor const &other ) const
 {
 	return Tensor<T>(
@@ -302,7 +375,6 @@ Tensor<T> &Tensor<T>::operator-=( Tensor const &other )
 template <typename T>
 Tensor<T> Tensor<T>::addColwise( Tensor const &col ) const
 {
-	// col is (cols(), 1); broadcast bias across batch rows (Eigen array + does not broadcast).
 	return Tensor<T>(
 	    ( m_mat.rowwise() + col.m_mat.col( 0 ).transpose() ).eval() );
 }
@@ -354,6 +426,16 @@ Tensor<T> Tensor<T>::cwiseGreater( value_type scalar ) const
 }
 
 template <typename T>
+Tensor<T> &Tensor<T>::cwiseGreaterInPlace( Tensor const &other, value_type scalar )
+{
+	if ( rows() != other.rows() || cols() != other.cols() ) {
+		throw std::invalid_argument( "Tensor::cwiseGreaterInPlace(other, scalar): incompatible dimensions" );
+	}
+	m_mat = ( other.m_mat.array() > scalar ).template cast<value_type>().matrix().eval();
+	return *this;
+}
+
+template <typename T>
 Tensor<T> Tensor<T>::cwiseOneMinus() const
 {
 	return Tensor<T>( ( 1.0 - m_mat.array() ).matrix().eval() );
@@ -380,16 +462,88 @@ Tensor<T> Tensor<T>::cwiseLog() const
 template <typename T>
 T Tensor<T>::sum() const
 {
+	if ( m_mat.size() == 0 ) {
+		return value_type{};
+	}
 	return m_mat.sum();
 }
 
 template <typename T>
-Tensor<T> Tensor<T>::sum_along_axis( std::size_t axis ) const
+T Tensor<T>::asum() const
 {
-	if ( axis == 0 ) {
-		return Tensor<T>( m_mat.colwise().sum() );
+	if ( m_mat.size() == 0 ) {
+		return value_type{};
 	}
-	return Tensor<T>( m_mat.rowwise().sum() );
+	return m_mat.cwiseAbs().sum();
+}
+
+template <typename T>
+Tensor<T> Tensor<T>::sumAlongAxis( std::size_t axis, bool transpose_out ) const
+{
+	if ( axis != 0 && axis != 1 ) {
+		throw std::invalid_argument( "Tensor::sumAlongAxis(): axis must be 0 or 1" );
+	}
+	if ( m_mat.size() == 0 ) {
+		return Tensor<T>{};
+	}
+	if ( axis == 0 ) {
+		if ( !transpose_out ) {
+			return Tensor<T>( m_mat.colwise().sum() );
+		}
+		return Tensor<T>( m_mat.colwise().sum().transpose() );
+	}
+	if ( !transpose_out ) {
+		return Tensor<T>( m_mat.rowwise().sum() );
+	}
+	return Tensor<T>( m_mat.rowwise().sum().transpose() );
+}
+
+template <typename T>
+Tensor<T> &Tensor<T>::sumAlongAxisInPlace( Tensor const &src, std::size_t axis, bool transpose_out )
+{
+	if ( this == &src ) {
+		throw std::runtime_error(
+		    "Tensor::sumAlongAxisInPlace(src, axis): src must not be *this" );
+	}
+	if ( axis != 0 && axis != 1 ) {
+		throw std::invalid_argument( "Tensor::sumAlongAxisInPlace(): axis must be 0 or 1" );
+	}
+	if ( src.m_mat.size() == 0 ) {
+		if ( m_mat.size() == 0 ) {
+			return *this;
+		}
+		throw std::invalid_argument( "Tensor::sumAlongAxisInPlace(): incompatible dimensions" );
+	}
+	if ( axis == 0 ) {
+		if ( !transpose_out ) {
+			if ( rows() != 1u || cols() != src.cols() ) {
+				throw std::invalid_argument(
+				    "Tensor::sumAlongAxisInPlace(): for axis 0, *this must have shape (1, src.cols())" );
+			}
+			m_mat = src.m_mat.colwise().sum();
+		} else {
+			if ( rows() != src.cols() || cols() != 1u ) {
+				throw std::invalid_argument(
+				    "Tensor::sumAlongAxisInPlace(): for axis 0 with transpose_out, *this must have shape (src.cols(), 1)" );
+			}
+			m_mat = src.m_mat.colwise().sum().transpose();
+		}
+		return *this;
+	}
+	if ( !transpose_out ) {
+		if ( rows() != src.rows() || cols() != 1u ) {
+			throw std::invalid_argument(
+			    "Tensor::sumAlongAxisInPlace(): for axis 1, *this must have shape (src.rows(), 1)" );
+		}
+		m_mat = src.m_mat.rowwise().sum();
+	} else {
+		if ( rows() != 1u || cols() != src.rows() ) {
+			throw std::invalid_argument(
+			    "Tensor::sumAlongAxisInPlace(): for axis 1 with transpose_out, *this must have shape (1, src.rows())" );
+		}
+		m_mat = src.m_mat.rowwise().sum().transpose();
+	}
+	return *this;
 }
 
 template <typename T>
@@ -413,8 +567,6 @@ void Tensor<T>::randomize() noexcept
 {
 	std::random_device rd;
 	std::mt19937 gen( rd() );
-	// std::uniform_real_distribution is only defined for float/double/long double;
-	// Eigen::half and other custom scalars use double + cast.
 	std::uniform_real_distribution<double> dis( 0.0, 1.0 );
 	auto generator = [&]() { return static_cast<T>( dis( gen ) ); };
 	randomize( generator );
@@ -430,6 +582,6 @@ void Tensor<T>::randomizeHe( std::size_t fan_in ) noexcept
 	auto generator = [&]() { return static_cast<T>( dis( gen ) ); };
 	randomize( generator );
 }
-} // namespace neural
+}
 
-#endif // NEURAL_IMPL_TENSOR_CPP
+#endif

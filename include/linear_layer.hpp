@@ -1,35 +1,33 @@
 #ifndef LINEAR_LAYER_HPP
 #define LINEAR_LAYER_HPP
 #include "tensor_like.hpp"
+#include "layer_base.hpp"
 
 namespace neural {
 
 template <typename Tensor>
-class LinearLayer
+class LinearLayer : public LayerBase< Tensor >
 {
-		static_assert( TensorLike<Tensor>, "Tensor must be a TensorLike type" );
+	static_assert( TensorLike<Tensor>, "Tensor must be a TensorLike type" );
 	public:
 		LinearLayer( std::size_t in_features, std::size_t out_features );
 		LinearLayer( Tensor const &weights, Tensor const &bias );
 
 		void initialize();
 
-		Tensor forward( Tensor const &input );
-		Tensor backward( Tensor const &grad_output );
+		Tensor *forward();
+		Tensor *backward();
 
 		Tensor const &getGradWeights() const;
 		Tensor const &getGradBias() const;
-		/// I did return the weights and bias by reference for performance reasons
 		Tensor &getWeights();
 		Tensor &getBias();
 		Tensor const &getWeights() const;
 		Tensor const &getBias() const;
 	private:
-		Tensor m_weights; // (in_features, out_features)
-		Tensor m_bias;    // ( out_features, 1)
+		Tensor m_weights;
+		Tensor m_bias;
 
-	// Cache for backward pass
-		Tensor m_input;
 		Tensor m_grad_weights;
 		Tensor m_grad_bias;
 };
@@ -38,6 +36,8 @@ template <typename Tensor >
 LinearLayer<Tensor>::LinearLayer( std::size_t in_features, std::size_t out_features )
 	: m_weights( in_features, out_features )
 	, m_bias( Tensor( out_features, 1, static_cast<typename Tensor::value_type>(0.) ) )
+	, m_grad_weights( in_features, out_features )
+	, m_grad_bias( out_features, 1 )
 {
 	initialize();
 }
@@ -46,28 +46,29 @@ template <typename Tensor >
 LinearLayer<Tensor>::LinearLayer( Tensor const &weights, Tensor const &bias )
 	: m_weights( weights )
 	, m_bias( bias )
+	, m_grad_weights( weights.rows(), weights.cols() )
+	, m_grad_bias( bias.rows(), 1 )
 {
 }
 
 template <typename Tensor >
-Tensor LinearLayer<Tensor>::forward( Tensor const &input )
+Tensor *LinearLayer<Tensor>::forward()
 {
-	Tensor ret = input.matmul( m_weights );
+	this->getOutput()->matmulInPlace( *this->getInput(), m_weights );
+	this->getOutput()->addColwiseInPlace( m_bias );
 
-	m_input = input;
-
-	ret.addColwiseInPlace( m_bias );
-
-	return ret;
+	return this->getOutput();
 }
 
 template <typename Tensor >
-Tensor LinearLayer<Tensor>::backward( Tensor const &grad_output )
+Tensor *LinearLayer<Tensor>::backward()
 {
-	m_grad_weights = m_input.transpose().matmul( grad_output );
-	m_grad_bias = grad_output.sum_along_axis( 0 ).transpose();
+	Tensor const &grad = *this->getGradInput();
+	m_grad_weights.matmulInPlace( *this->getInput(), grad, true );
+	m_grad_bias.sumAlongAxisInPlace( grad, 0, true );
+	this->getGradOutput()->matmulInPlace( grad, m_weights, false, true );
 
-	return grad_output.matmul( m_weights.transpose() );
+	return this->getGradOutput();
 }
 
 template <typename Tensor >

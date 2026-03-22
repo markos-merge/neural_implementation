@@ -111,12 +111,26 @@ TEST_CASE( "CudaTensor stub operations are callable", "[cuda_tensor][stub]" )
 	(void)( a * 2.f );
 	(void)( a *= 2.f );
 	(void)a.cwiseGreater( 0.f );
+	{
+		CudaTensor<float> g( 2u, 3u, 0.f );
+		(void)g.cwiseGreaterInPlace( a, 0.f );
+	}
 	(void)a.cwiseOneMinus();
 	(void)a.cwiseSigmoid();
 	(void)a.cwiseExp();
 	(void)a.cwiseLog();
 	(void)a.sum();
-	(void)a.sum_along_axis( 0u );
+	(void)a.sumAlongAxis( 0u );
+	{
+		CudaTensor<float> out_axis0( 1u, 3u, 0.f );
+		(void)out_axis0.sumAlongAxisInPlace( a, 0u );
+		CudaTensor<float> out_axis0t( 3u, 1u, 0.f );
+		(void)out_axis0t.sumAlongAxisInPlace( a, 0u, true );
+		CudaTensor<float> out_axis1( 2u, 1u, 0.f );
+		(void)out_axis1.sumAlongAxisInPlace( a, 1u );
+		CudaTensor<float> out_axis1t( 1u, 2u, 0.f );
+		(void)out_axis1t.sumAlongAxisInPlace( a, 1u, true );
+	}
 	(void)a.max_along_axis( 1u );
 
 	std::mt19937 gen( 42 );
@@ -229,18 +243,31 @@ TEST_CASE( "CudaTensor unary ops and reductions match expectations", "[cuda_tens
 	REQUIRE_THAT( lg( 1, 1 ), WithinAbs( std::log( 4.f ), 1e-4f ) );
 
 	REQUIRE_THAT( a.sum(), WithinAbs( 5.5f, 1e-4f ) );
+	REQUIRE_THAT( a.asum(), WithinAbs( 7.5f, 1e-4f ) );
 
-	CudaTensor<float> s0 = a.sum_along_axis( 0u );
+	CudaTensor<float> s0 = a.sumAlongAxis( 0u );
 	REQUIRE( s0.rows() == 1u );
 	REQUIRE( s0.cols() == 2u );
 	REQUIRE_THAT( s0( 0, 0 ), WithinAbs( -0.5f, 1e-4f ) );
 	REQUIRE_THAT( s0( 0, 1 ), WithinAbs( 6.f, 1e-4f ) );
 
-	CudaTensor<float> s1 = a.sum_along_axis( 1u );
+	CudaTensor<float> s1 = a.sumAlongAxis( 1u );
 	REQUIRE( s1.rows() == 2u );
 	REQUIRE( s1.cols() == 1u );
 	REQUIRE_THAT( s1( 0, 0 ), WithinAbs( 2.5f, 1e-4f ) );
 	REQUIRE_THAT( s1( 1, 0 ), WithinAbs( 3.f, 1e-4f ) );
+
+	CudaTensor<float> s0t = a.sumAlongAxis( 0u, true );
+	REQUIRE( s0t.rows() == 2u );
+	REQUIRE( s0t.cols() == 1u );
+	REQUIRE_THAT( s0t( 0, 0 ), WithinAbs( -0.5f, 1e-4f ) );
+	REQUIRE_THAT( s0t( 1, 0 ), WithinAbs( 6.f, 1e-4f ) );
+
+	CudaTensor<float> s1t = a.sumAlongAxis( 1u, true );
+	REQUIRE( s1t.rows() == 1u );
+	REQUIRE( s1t.cols() == 2u );
+	REQUIRE_THAT( s1t( 0, 0 ), WithinAbs( 2.5f, 1e-4f ) );
+	REQUIRE_THAT( s1t( 0, 1 ), WithinAbs( 3.f, 1e-4f ) );
 
 	CudaTensor<float> m0 = a.max_along_axis( 0u );
 	REQUIRE_THAT( m0( 0, 0 ), WithinAbs( 0.5f, 1e-4f ) );
