@@ -65,7 +65,7 @@ CTestTestfile.cmake
 *.log
 
 # Compile commands (generated in build dir; optional symlink at root)
-# compile_commands.json
+compile_commands.json
 
 # OS
 .DS_Store
