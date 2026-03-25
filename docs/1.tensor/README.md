@@ -18,6 +18,8 @@ A **Tensor** is the core data structure for the neural network: it holds multi-d
 |------|--------|
 | [API.md](API.md) | Tensor interface: shape, dtype, constructors, and operations to implement. |
 | [BACKEND.md](BACKEND.md) | Using Eigen as the CPU backend: storage, row-major layout, and mapping to Eigen types. |
+| [TENSOR_N.md](TENSOR_N.md) | `TensorN`: N-D tensor operations spec for convolutions and higher-rank data. |
+| [TENSOR_VIEW_REF.md](TENSOR_VIEW_REF.md) | Design: share Eigen math via `Eigen::Ref` / `Map` (no implementation in that file). |
 
 ## Implementation Order (Suggested)
 

@@ -49,7 +49,9 @@ The plan specifies **Eigen** for the CPU backend. This document gives implementa
 
 ## 6. Construction from Raw Data
 
-- Eigen has `Eigen::Map`: you can wrap a `float*` and dimensions to get a matrix view (same layout). Useful for “construct from pointer” without copying if you guarantee lifetime; otherwise copy into an `Eigen::Matrix<>` and store that.
+- Eigen has **`Eigen::Map`**: wrap a **`float*`** (or `T*`) plus **rows** and **cols** to get a **matrix view** with **no copy**. The mapped memory must stay valid for as long as you use the `Map`.
+- **Strided / non-contiguous** 2D windows (e.g. a slice that is not row-contiguous at the parent’s stride) need **`Eigen::Stride<Outer, Inner>`** as the third template parameter to `Map`, with strides matching your row-major layout (outer = offset between consecutive rows, inner = offset between consecutive columns, often `1`).
+- For **function parameters**, **`Eigen::Ref<const MatrixType>`** (and non-const `Ref`) can bind to both dense **`Matrix`** and **`Map`**, so one implementation can accept owned matrices and zero-copy views without copying.
 
 ---
 
