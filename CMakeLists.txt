@@ -11,6 +11,17 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Release only: strong optimization + SIMD tuned to the *build* machine (Eigen benefits).
+# GCC/Clang: -march=native may emit AVX/AVX2; binaries can fail on older CPUs than the builder’s.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+	add_compile_options(
+		$<$<CONFIG:Release>:-O3>
+		$<$<CONFIG:Release>:-march=native>
+	)
+elseif(MSVC)
+	add_compile_options($<$<CONFIG:Release>:/O2>)
+endif()
+
 option(NEURAL_ENABLE_CUDA "Enable CUDA language and link CUDA runtime" ON)
 
 set(NEURAL_CUDA_FOUND OFF)
@@ -53,26 +64,35 @@ if(NOT Catch2_FOUND)
 	FetchContent_MakeAvailable(Catch2)
 endif()
 
-# Core library
-add_library(neural_impl_lib
-    src/tensor.cpp
-)
+# Core library (Tensor is header-only in include/tensors/tensor.hpp)
+add_library(neural_impl_lib STATIC)
 
 if(NEURAL_CUDA_FOUND)
-	target_sources(neural_impl_lib PRIVATE src/cuda_runtime.cu src/cublas_handle.cpp)
+	target_sources(neural_impl_lib PRIVATE src/cuda/cuda_runtime.cu src/cuda/cublas_handle.cpp)
 	# cublas: SGEMM/DGEMM etc.; cublasLt: mixed precision / FP8 matmul (your custom FP8 path)
 	target_link_libraries(neural_impl_lib PUBLIC CUDA::cudart CUDA::cublas CUDA::cublasLt)
 	target_compile_definitions(neural_impl_lib PUBLIC NEURAL_CUDA_ENABLED=1)
 else()
-	target_sources(neural_impl_lib PRIVATE src/cuda_runtime_stub.cpp)
+	target_sources(neural_impl_lib PRIVATE src/cuda/cuda_runtime_stub.cpp)
 	target_compile_definitions(neural_impl_lib PUBLIC NEURAL_CUDA_ENABLED=0)
 endif()
 
-target_include_directories(neural_impl_lib PUBLIC include)
+# Public headers live under include/; subfolders are added so clients can use short includes
+# (e.g. "tensor.hpp", "sequential_nn.hpp", "sgd_optimizer.hpp", "mnist_loader.hpp").
+target_include_directories(neural_impl_lib PUBLIC
+	include
+	include/tensors
+	include/layers
+	include/losses
+	include/cuda
+	include/nn
+	include/optimizer
+	include/app
+)
 target_link_libraries(neural_impl_lib PUBLIC Eigen3::Eigen)
 
-# Main executable
-add_executable(neural_implementation src/main.cpp src/mnist_demo.cpp src/cifar_demo.cpp)
+# Main executable (entry point remains src/main.cpp; demos are under src/app/)
+add_executable(neural_implementation src/main.cpp src/app/mnist_demo.cpp src/app/cifar_demo.cpp)
 target_link_libraries(neural_implementation PRIVATE neural_impl_lib)
 
 # Tests

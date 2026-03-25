@@ -1,7 +1,7 @@
 #ifndef RELU_LAYER_HPP
 #define RELU_LAYER_HPP
-#include "tensor_like.hpp"
 #include "layer_base.hpp"
+#include "tensor_like.hpp"
 
 namespace neural {
 

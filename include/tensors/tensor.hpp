@@ -6,6 +6,7 @@
 #include <iterator>
 #include <random>
 #include <stdexcept>
+#include <vector>
 
 namespace neural {
 
@@ -17,6 +18,9 @@ class Tensor
 		using matrix_type = Eigen::Matrix<value_type, Eigen::Dynamic,
 		                                  Eigen::Dynamic, Eigen::RowMajor>;
 		using size_type = std::size_t;
+
+		template <typename type >
+		using tensor_alias = Tensor<type>;
 
 	public:
 		Tensor() noexcept;
@@ -38,10 +42,12 @@ class Tensor
 		value_type const operator()( std::size_t row, std::size_t col ) const;
 	
 		void assign( std::size_t row, std::size_t col, value_type value );
-		/// Fill every element with \p value (no-op if empty).
 		void assign( value_type value );
 
 		void assignTensorAsRow( std::size_t row, Tensor const &other );
+		void assignTensor( value_type *value, std::size_t size );
+		void assignTensorBlock( Tensor const &src, std::vector< int > const &indices,
+		                        std::size_t row_indices_src, std::size_t row_indices_size );
 
 		Tensor<T> transpose() const;
 		Tensor<T> &transposeInPlace() noexcept;
@@ -219,6 +225,51 @@ void Tensor<T>::assignTensorAsRow( std::size_t row, Tensor const &other )
 		    "Tensor::assignTensorAsRow(): other must have rows>=1 and same cols()" );
 	}
 	m_mat.row( static_cast<Eigen::Index>( row ) ) = other.m_mat.row( 0 );
+}
+
+template < typename T >
+void Tensor<T>::assignTensor( value_type *value, std::size_t size )
+{
+	if ( size != m_mat.size() ) {
+		throw std::invalid_argument(
+		    "Tensor::assignTensor(): size must be equal to the number of elements in the tensor" );
+	}
+	m_mat = Eigen::Map<Eigen::Matrix<value_type, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>( value, m_mat.rows(), m_mat.cols() );
+}
+
+template < typename T >
+void Tensor<T>::assignTensorBlock( Tensor const &src,
+                                   std::vector< int > const &indices, std::size_t row_indices_src,
+                                   std::size_t row_indices_size )
+{
+	if ( row_indices_size == 0u ) {
+		return;
+	}
+	if ( indices.size() < 1u ) {
+		throw std::invalid_argument(
+		    "Tensor::assignTensorBlock(): indices must be non-empty" );
+	}
+	if ( row_indices_src + row_indices_size > indices.size() ) {
+		throw std::invalid_argument(
+		    "Tensor::assignTensorBlock(): row_indices_src + row_indices_size exceeds indices.size()" );
+	}
+	if ( row_indices_size > static_cast<std::size_t>( m_mat.rows() ) ) {
+		throw std::invalid_argument(
+		    "Tensor::assignTensorBlock(): row_indices_size exceeds destination rows()" );
+	}
+	if ( static_cast<std::size_t>( src.m_mat.cols() ) != static_cast<std::size_t>( m_mat.cols() ) ) {
+		throw std::invalid_argument(
+		    "Tensor::assignTensorBlock(): src and *this must have the same number of columns" );
+	}
+	for ( std::size_t r = 0; r < row_indices_size; ++r ) {
+		int const src_row = indices[row_indices_src + r];
+		if ( src_row < 0 || static_cast<std::size_t>( src_row ) >= static_cast<std::size_t>( src.m_mat.rows() ) ) {
+			throw std::out_of_range( "Tensor::assignTensorBlock(): indices entry out of range for src" );
+		}
+		Tensor<T> const one_row(
+		    matrix_type( src.m_mat.row( static_cast<Eigen::Index>( src_row ) ).eval() ) );
+		assignTensorAsRow( r, one_row );
+	}
 }
 
 template <typename T>

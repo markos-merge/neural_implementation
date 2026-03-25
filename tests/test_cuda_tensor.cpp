@@ -1,5 +1,6 @@
 #include "cuda_tensor.hpp"
 #include "neural_cuda_runtime.hpp"
+#include "tensor.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -97,6 +98,12 @@ TEST_CASE( "CudaTensor stub operations are callable", "[cuda_tensor][stub]" )
 	}
 	CudaTensor<float> a( 2u, 3u, 0.f );
 	CudaTensor<float> b( 2u, 3u, 0.f );
+	{
+		CudaTensor<float> src( 2u, 3u, 0.f );
+		CudaTensor<float> dst( 2u, 3u, 0.f );
+		std::vector<int> const idx{ 0 };
+		dst.assignTensorBlock( src, idx, 0u, 1u );
+	}
 	CudaTensor<float> col_bias( 3u, 1u, 0.f );
 	CudaTensor<float> row_sub( 2u, 1u, 0.f );
 	(void)( a + b );
@@ -319,6 +326,42 @@ TEST_CASE( "CudaTensor assignTensorAsRow copies device row with cudaMemcpy", "[c
 	REQUIRE_THAT( batch( 0, 2 ), WithinAbs( 3.f, 1e-5f ) );
 	REQUIRE_THAT( batch( 1, 0 ), WithinAbs( 4.f, 1e-5f ) );
 	REQUIRE_THAT( batch( 1, 2 ), WithinAbs( 6.f, 1e-5f ) );
+}
+
+TEST_CASE( "CudaTensor assignTensorBlock gathers full rows like Tensor", "[cuda_tensor][assignTensorBlock]" )
+{
+	if ( !neural::cuda_runtime_ready() ) {
+		SKIP( "No CUDA device available" );
+	}
+	CudaTensor<float> src( 3u, 5u, 0.f );
+	for ( std::size_t row = 0; row < 3u; ++row ) {
+		for ( std::size_t c = 0; c < 5u; ++c ) {
+			src.assign( row, c, static_cast<float>( row + 1 ) );
+		}
+	}
+	CudaTensor<float> dst( 2u, 5u, 0.f );
+	std::vector<int> const indices{ 2, 0 };
+	dst.assignTensorBlock( src, indices, 0u, 2u );
+	REQUIRE_THAT( dst( 0, 0 ), WithinAbs( 3.f, 1e-5f ) );
+	REQUIRE_THAT( dst( 1, 4 ), WithinAbs( 1.f, 1e-5f ) );
+}
+
+TEST_CASE( "CudaTensor assignTensorBlock row_indices_src window", "[cuda_tensor][assignTensorBlock]" )
+{
+	if ( !neural::cuda_runtime_ready() ) {
+		SKIP( "No CUDA device available" );
+	}
+	CudaTensor<float> src( 3u, 4u, 0.f );
+	for ( std::size_t row = 0; row < 3u; ++row ) {
+		for ( std::size_t c = 0; c < 4u; ++c ) {
+			src.assign( row, c, static_cast<float>( 10 * row + static_cast<int>( c ) ) );
+		}
+	}
+	CudaTensor<float> dst( 1u, 4u, 0.f );
+	std::vector<int> const indices{ 2, 0, 1 };
+	dst.assignTensorBlock( src, indices, 1u, 1u );
+	REQUIRE_THAT( dst( 0, 0 ), WithinAbs( 0.f, 1e-5f ) );
+	REQUIRE_THAT( dst( 0, 3 ), WithinAbs( 3.f, 1e-5f ) );
 }
 
 TEST_CASE( "CudaTensor copy and move preserve shape", "[cuda_tensor][rule_of_five]" )

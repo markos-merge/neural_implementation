@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 #include "cublas_handle.hpp"
+#include "tensor.hpp"
 #include <cublas_v2.h>
 
 namespace neural {
@@ -28,10 +29,10 @@ namespace detail {
 inline cudaError_t cuda_malloc_retry( void **dev_ptr, std::size_t size_bytes,
                                       int max_attempts = 5 )
 {
-	(void)cudaDeviceSynchronize();
+	// (void)cudaDeviceSynchronize();
 	for ( int attempt = 0; attempt < max_attempts; ++attempt ) {
 		if ( attempt > 0 ) {
-			std::this_thread::sleep_for( std::chrono::milliseconds( 10 * attempt ) );
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 * attempt ) );
 			(void)cudaDeviceSynchronize();
 		}
 		cudaError_t const err = cudaMalloc( dev_ptr, size_bytes );
@@ -67,6 +68,9 @@ class CudaTensor
 		using matrix_type = CudaTensorMatrixPlaceholder<value_type>;
 		using size_type = std::size_t;
 
+		template <typename type>
+		using tensor_alias = CudaTensor<type>;
+
 	public:
 		CudaTensor() noexcept = default;
 		CudaTensor( std::size_t rows, std::size_t cols );
@@ -91,6 +95,9 @@ class CudaTensor
 		void assign( value_type value );
 
 		void assignTensorAsRow( std::size_t row, CudaTensor const &other );
+		void assignTensor( value_type *value, std::size_t size );
+		void assignTensorBlock( CudaTensor const &src, std::vector< int > const &indices,
+		                        std::size_t row_indices_src, std::size_t row_indices_size );
 
 		CudaTensor transpose() const;
 		CudaTensor &transposeInPlace() noexcept;
@@ -212,8 +219,9 @@ CudaTensor<T>::CudaTensor( std::size_t rows, std::size_t cols, It begin, It end 
 }
 
 template <typename T>
-CudaTensor<T>::~CudaTensor(){
-	if ( m_data_handle != nullptr ){
+CudaTensor<T>::~CudaTensor()
+{
+	if ( m_data_handle != nullptr ) {
 		cudaFree( m_data_handle );
 		m_data_handle = nullptr;
 	}
@@ -451,6 +459,87 @@ void CudaTensor<T>::assignTensorAsRow( std::size_t row, CudaTensor const &other 
 	                m_cols * sizeof( T ), cudaMemcpyDeviceToDevice );
 	if ( cuda_stat != cudaSuccess ) {
 		throw std::runtime_error( "CudaTensor::assignTensorAsRow(): cudaMemcpy failed" );
+	}
+}
+
+template <typename T>
+void CudaTensor<T>::assignTensor( value_type *value, std::size_t size )
+{
+	if ( size != m_rows * m_cols ) {
+		throw std::out_of_range( "CudaTensor::assignTensorAsRow(): row out of range" );
+	}
+
+	cudaError_t const cuda_stat =
+	    cudaMemcpy( m_data_handle, value, size * sizeof( T ),
+	                cudaMemcpyHostToDevice );
+	if ( cuda_stat != cudaSuccess ) {
+		throw std::runtime_error( "CudaTensor::assignTensor(): cudaMemcpy failed" );
+	}
+}
+
+template <typename T>
+void CudaTensor<T>::assignTensorBlock( CudaTensor const &src, std::vector< int > const &indices,
+                                       std::size_t row_indices_src, std::size_t row_indices_size )
+{
+	if ( row_indices_size == 0u ) {
+		return;
+	}
+	if ( indices.size() < 1u ) {
+		throw std::invalid_argument(
+		    "CudaTensor::assignTensorBlock(): indices must be non-empty" );
+	}
+	if ( row_indices_src + row_indices_size > indices.size() ) {
+		throw std::invalid_argument(
+		    "CudaTensor::assignTensorBlock(): row_indices_src + row_indices_size exceeds indices.size()" );
+	}
+	if ( row_indices_size > m_rows ) {
+		throw std::invalid_argument(
+		    "CudaTensor::assignTensorBlock(): row_indices_size exceeds destination rows()" );
+	}
+	if ( src.m_cols != m_cols ) {
+		throw std::invalid_argument(
+		    "CudaTensor::assignTensorBlock(): src and *this must have the same number of columns" );
+	}
+	if ( m_data_handle == nullptr || src.m_data_handle == nullptr || m_cols == 0 ) {
+		return;
+	}
+
+	for ( std::size_t r = 0; r < row_indices_size; ++r ) {
+		int const src_row = indices[row_indices_src + r];
+		if ( src_row < 0 || static_cast<std::size_t>( src_row ) >= src.m_rows ) {
+			throw std::out_of_range( "CudaTensor::assignTensorBlock(): indices entry out of range for src" );
+		}
+	}
+
+	if constexpr ( std::is_same_v<T, float> ) {
+		cudaError_t const err = cuda_gather_rows_float( src.m_data_handle, m_data_handle, src.m_rows,
+		    m_cols, indices.data(), row_indices_src, row_indices_size );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::assignTensorBlock(): cuda_gather_rows_float failed" );
+		}
+		return;
+	}
+#if NEURAL_CUDA_ENABLED
+	if constexpr ( std::is_same_v<T, fp8> ) {
+		cudaError_t const err = cuda_gather_rows_fp8( src.m_data_handle, m_data_handle, src.m_rows,
+		    m_cols, indices.data(), row_indices_src, row_indices_size );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::assignTensorBlock(): cuda_gather_rows_fp8 failed" );
+		}
+		return;
+	}
+#endif
+
+	cudaStream_t const stream = cudaStreamDefault;
+	for ( std::size_t r = 0; r < row_indices_size; ++r ) {
+		int const src_row = indices[row_indices_src + r];
+		cudaError_t const cuda_stat = cudaMemcpyAsync(
+		    m_data_handle + r * m_cols,
+		    src.m_data_handle + static_cast<std::size_t>( src_row ) * src.m_cols, m_cols * sizeof( T ),
+		    cudaMemcpyDeviceToDevice, stream );
+		if ( cuda_stat != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::assignTensorBlock(): cudaMemcpyAsync failed" );
+		}
 	}
 }
 
@@ -829,10 +918,6 @@ CudaTensor<T> CudaTensor<T>::operator+( CudaTensor const &other ) const
 		if ( st != CUBLAS_STATUS_SUCCESS ) {
 			throw std::runtime_error( "CudaTensor::operator+(): cublasSgeam failed" );
 		}
-		cudaError_t const sync = cudaDeviceSynchronize();
-		if ( sync != cudaSuccess ) {
-			throw std::runtime_error( "CudaTensor::operator+(): cudaDeviceSynchronize failed" );
-		}
 		return out;
 #if NEURAL_CUDA_ENABLED
 	} else if constexpr ( std::is_same_v<T, fp8> ) {
@@ -879,10 +964,6 @@ CudaTensor<T> &CudaTensor<T>::operator+=( CudaTensor const &other )
 		    static_cast<int>( m_cols ) );
 		if ( st != CUBLAS_STATUS_SUCCESS ) {
 			throw std::runtime_error( "CudaTensor::operator+=(): cublasSgeam failed" );
-		}
-		cudaError_t const sync = cudaDeviceSynchronize();
-		if ( sync != cudaSuccess ) {
-			throw std::runtime_error( "CudaTensor::operator+=(): cudaDeviceSynchronize failed" );
 		}
 		return *this;
 #if NEURAL_CUDA_ENABLED
@@ -932,10 +1013,6 @@ CudaTensor<T> CudaTensor<T>::operator-( CudaTensor const &other ) const
 		if ( st != CUBLAS_STATUS_SUCCESS ) {
 			throw std::runtime_error( "CudaTensor::operator+(): cublasSgeam failed" );
 		}
-		cudaError_t const sync = cudaDeviceSynchronize();
-		if ( sync != cudaSuccess ) {
-			throw std::runtime_error( "CudaTensor::operator+(): cudaDeviceSynchronize failed" );
-		}
 		return out;
 #if NEURAL_CUDA_ENABLED
 	} else if constexpr ( std::is_same_v<T, fp8> ) {
@@ -982,10 +1059,6 @@ CudaTensor<T> &CudaTensor<T>::operator-=( CudaTensor const &other )
 		    static_cast<int>( m_cols ) );
 		if ( st != CUBLAS_STATUS_SUCCESS ) {
 			throw std::runtime_error( "CudaTensor::operator+=(): cublasSgeam failed" );
-		}
-		cudaError_t const sync = cudaDeviceSynchronize();
-		if ( sync != cudaSuccess ) {
-			throw std::runtime_error( "CudaTensor::operator+=(): cudaDeviceSynchronize failed" );
 		}
 		return *this;
 #if NEURAL_CUDA_ENABLED
@@ -1408,10 +1481,6 @@ T CudaTensor<T>::asum() const
 		                                       m_data_handle, 1, &h );
 		if ( st != CUBLAS_STATUS_SUCCESS ) {
 			throw std::runtime_error( "CudaTensor::asum(): cublasSasum failed" );
-		}
-		cudaError_t const sync = cudaDeviceSynchronize();
-		if ( sync != cudaSuccess ) {
-			throw std::runtime_error( "CudaTensor::asum(): cudaDeviceSynchronize failed" );
 		}
 		return h;
 #if NEURAL_CUDA_ENABLED

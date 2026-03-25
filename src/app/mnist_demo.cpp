@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <string>
 #include <type_traits>
+#include <chrono>
 
 namespace {
 
@@ -18,7 +19,7 @@ using Tensor_t = neural::Tensor<float>;
 
 int const PROGRESS_WIDTH = 40;
 
-void draw_progress_bar( std::size_t current, std::size_t total, float loss,
+void draw_progress_bar( std::size_t current, std::size_t total, float loss, double epoch_sec,
                        char const *prefix = "" )
 {
 	float pct = total > 0 ? static_cast<float>( current ) / static_cast<float>( total ) : 0.f;
@@ -27,6 +28,7 @@ void draw_progress_bar( std::size_t current, std::size_t total, float loss,
 	for ( int i = 0; i < PROGRESS_WIDTH; ++i )
 		std::cout << ( i < filled ? '=' : ( i == filled ? '>' : '-' ) );
 	std::cout << "] " << std::fixed << std::setprecision( 1 ) << ( pct * 100.f ) << "%"
+	          << "  " << std::setprecision( 3 ) << epoch_sec << "s/epoch"
 	          << "  loss: " << std::setprecision( 4 ) << loss << "    " << std::flush;
 }
 using NN = neural::SequentialNN<Tensor_t, neural::SoftmaxCrossEntropyLoss<Tensor_t>,
@@ -109,15 +111,20 @@ void run_mnist_demo()
 	opt.m_batch_size = 128;
 	opt.m_epochs = 5000;
 
+	auto last_epoch_end = std::chrono::steady_clock::now();
 	opt.train( train_data.images, train_data.labels,
-	           []( std::size_t epoch, std::size_t epoch_max, std::size_t batch_idx,
-	               std::size_t batch_max, float loss ) {
+	           [&]( std::size_t epoch, std::size_t epoch_max, std::size_t batch_idx,
+	                std::size_t batch_max, float loss ) {
 		           if ( batch_idx + 1 < batch_max ) {
 			           return;
 		           }
+		           auto const now = std::chrono::steady_clock::now();
+		           double const epoch_sec =
+		               std::chrono::duration<double>( now - last_epoch_end ).count();
+		           last_epoch_end = now;
 		           std::string const prefix = "Epoch " + std::to_string( epoch + 1 ) + "/" +
 		                                       std::to_string( epoch_max ) + " ";
-		           draw_progress_bar( epoch + 1, epoch_max, loss, prefix.c_str() );
+		           draw_progress_bar( epoch + 1, epoch_max, loss, epoch_sec, prefix.c_str() );
 	           } );
 	std::cout << "\n";
 

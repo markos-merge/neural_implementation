@@ -18,6 +18,18 @@ cudaError_t cuda_transpose_fp8( __nv_fp8_e4m3 const *, __nv_fp8_e4m3 *, std::siz
 	return cudaSuccess;
 }
 
+cudaError_t cuda_gather_rows_float( float const *, float *, std::size_t, std::size_t, int const *,
+                                    std::size_t, std::size_t )
+{
+	return cudaSuccess;
+}
+
+cudaError_t cuda_gather_rows_fp8( __nv_fp8_e4m3 const *, __nv_fp8_e4m3 *, std::size_t, std::size_t,
+                                  int const *, std::size_t, std::size_t )
+{
+	return cudaSuccess;
+}
+
 cudaError_t cuda_max_abs_float( float const *, std::size_t, float *out_host )
 {
 	if ( out_host != nullptr ) {

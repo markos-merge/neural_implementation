@@ -1,7 +1,7 @@
 #ifndef SOFTMAX_LAYER_HPP
 #define SOFTMAX_LAYER_HPP
-#include "tensor_like.hpp"
 #include "layer_base.hpp"
+#include "tensor_like.hpp"
 
 namespace neural {
 

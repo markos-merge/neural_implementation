@@ -30,6 +30,16 @@ cudaError_t cuda_fill_fp8( __nv_fp8_e4m3 *dev, std::size_t count, __nv_fp8_e4m3 
 cudaError_t cuda_transpose_float( float const *in, float *out, std::size_t rows, std::size_t cols );
 cudaError_t cuda_transpose_fp8( __nv_fp8_e4m3 const *in, __nv_fp8_e4m3 *out, std::size_t rows, std::size_t cols );
 
+/// Row-major gather in one kernel: `dst` has `row_indices_size` rows; for each output row `r`,
+/// `dst(r,:) = src(indices_host[row_indices_src + r],:)`. `src_rows` is unused but kept for symmetry
+/// with callers that validate against it.
+cudaError_t cuda_gather_rows_float( float const *src, float *dst, std::size_t src_rows, std::size_t cols,
+                                   int const *indices_host, std::size_t row_indices_src,
+                                   std::size_t row_indices_size );
+cudaError_t cuda_gather_rows_fp8( __nv_fp8_e4m3 const *src, __nv_fp8_e4m3 *dst, std::size_t src_rows,
+                                  std::size_t cols, int const *indices_host, std::size_t row_indices_src,
+                                  std::size_t row_indices_size );
+
 cudaError_t cuda_matmul_fp8( __nv_fp8_e4m3 *dev, __nv_fp8_e4m3 *other, __nv_fp8_e4m3 *result, std::size_t rows, std::size_t cols, std::size_t other_rows, std::size_t other_cols );
 
 cudaError_t divide_rows_with_col_float( float *dev, float *other, std::size_t rows, std::size_t cols );

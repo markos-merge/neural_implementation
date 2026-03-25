@@ -94,34 +94,54 @@ void copy_batch_to_tensor( Tensor &tensor, std::vector<Tensor> &inputs,
 		tensor.assignTensorAsRow( r, inputs[batch_indices[index_offset_in_epoch + r]] );
 	}
 }
+	
+template <typename Tensor>
+void copy_batch_to_tensor_block( Tensor &tensor, std::vector<Tensor> &inputs )
+{
+	for ( std::size_t r = 0; r < inputs.size(); ++r ) {
+		tensor.assignTensorAsRow( r, inputs[r] );
+	}
+}
+
 } // namespace detail
 
-template< typename Tensor, typename NN >
-void SGDOptimizer<Tensor, NN>::train( std::vector< Tensor > &inputs,
-                                     std::vector< Tensor > &targets,
-                                     ProgressCallback callback )
+template< typename Tensor_t, typename NN >
+void SGDOptimizer<Tensor_t, NN>::train( std::vector< Tensor_t > &inputs,
+                                     std::vector< Tensor_t > &targets,
+                                     typename SGDOptimizer<Tensor_t, NN>::ProgressCallback callback )
 {
 	initialize();
-	std::size_t const total_batches =
-	    ( inputs.size() + m_batch_size - 1 ) / m_batch_size;
+	// Only full batches so buffer shapes stay fixed (remainder samples are skipped each epoch).
+	std::size_t const total_batches = inputs.size() / m_batch_size;
+	if ( total_batches == 0 ) {
+		return;
+	}
+	std::vector< int > batch_indices_int( inputs.size() );
+
+	Tensor_t inputs_tensor( inputs.size(), inputs[0].cols() );
+	Tensor_t targets_tensor( targets.size(), targets[0].cols() );
+
+	detail::copy_batch_to_tensor_block( inputs_tensor, inputs );
+	detail::copy_batch_to_tensor_block( targets_tensor, targets );
 
 	for( std::size_t epoch = 0; epoch < this->m_epochs; ++epoch ) {
 		std::vector< std::size_t > batch_indices( inputs.size() );
 		std::iota( batch_indices.begin(), batch_indices.end(), 0 );
 		std::shuffle( batch_indices.begin(), batch_indices.end(),
 		              std::mt19937( static_cast<std::mt19937::result_type>( epoch ) ) );
-		std::size_t batch_idx = 0;
-		typename Tensor::value_type loss = 0.0;
+		for ( std::size_t r = 0; r < batch_indices.size(); ++r ) {
+			batch_indices_int[static_cast<std::size_t>( r )] =
+			    static_cast<int>( batch_indices[static_cast<std::size_t>( r )] );
+		}
 
-		for( std::size_t i = 0; i < inputs.size(); i += m_batch_size ) {
-			std::size_t const cur_batch_size = std::min( m_batch_size, inputs.size() - i );
-			if ( cur_batch_size == 0 )
-				continue;
-			m_nn.ensureBuffersForShape( cur_batch_size, inputs[0].cols() );
-			detail::copy_batch_to_tensor( *m_nn.inputLatch().input(), inputs,
-			                              batch_indices, i, cur_batch_size );
-			detail::copy_batch_to_tensor( m_nn.targetBuffer(), targets, batch_indices, i,
-			                              cur_batch_size );
+		std::size_t batch_idx = 0;
+		typename Tensor_t::value_type loss = 0.0;
+
+		for( std::size_t i = 0; i < total_batches * m_batch_size; i += m_batch_size ) {
+			m_nn.ensureBuffersForShape( m_batch_size, inputs[0].cols() );
+			m_nn.inputLatch().input()->assignTensorBlock( inputs_tensor, batch_indices_int, i,
+			                                              m_batch_size );
+			m_nn.targetBuffer().assignTensorBlock( targets_tensor, batch_indices_int, i, m_batch_size );
 			loss = m_nn.trainStep();
 
 			applyStep();
