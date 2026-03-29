@@ -1,0 +1,49 @@
+# Paths excluded from Cursor indexing (AI context / search).
+# Keeps retrieval focused on source; mirrors noisy entries from .gitignore.
+
+# Build / CMake outputs
+build/
+build_*/
+build_cuda/
+out/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.cmake
+!CMakeLists.txt
+.cmake/
+Testing/
+CTestTestfile.cmake
+
+# Fetched dependencies
+_deps/
+
+# Large local data and debug dumps (not source)
+data/
+debug_weights/
+
+# Profiling / tooling noise
+perf.data
+perf.data.*
+flame.svg
+compile_commands.json
+
+# Precompiled headers
+*.gch
+
+# Compiled artifacts (if present in tree)
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+
+# Ninja / CTest logs at repo root
+.ninja_log
+.ninja_deps
