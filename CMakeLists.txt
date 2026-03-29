@@ -98,6 +98,7 @@ target_link_libraries(neural_implementation PRIVATE neural_impl_lib)
 # Tests
 add_executable(tests
     tests/test_tensor.cpp
+    tests/test_tensor_n.cpp
     tests/test_cuda_tensor.cpp
     tests/test_cuda_nn.cpp
     tests/test_cuda_runtime.cpp
