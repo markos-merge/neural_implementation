@@ -2,6 +2,7 @@
 #include "mse_loss.hpp"
 #include "relu_layer.hpp"
 #include "sequential_nn.hpp"
+#include "momentum_sgd_optimizer.hpp"
 #include "sgd_optimizer.hpp"
 #include "tensor.hpp"
 #include "tensor_like.hpp"
@@ -12,6 +13,7 @@
 using neural::LinearLayer;
 using neural::MSELoss;
 using neural::ReLULayer;
+using neural::MomentumSGDOptimizer;
 using neural::SGDOptimizer;
 using neural::SequentialNN;
 using neural::Tensor;
@@ -65,6 +67,26 @@ TEST_CASE( "SGDOptimizer constructor and train runs without crash", "[sgd_optimi
 	SimpleNN nn( linear );
 
 	SGDOptimizer<Tensor<float>, SimpleNN> opt( nn );
+
+	std::vector<Tensor<float>> inputs;
+	std::vector<Tensor<float>> targets;
+	for ( int i = 0; i < 4; ++i ) {
+		inputs.push_back( Tensor<float>( 1, 2, static_cast<float>( i ) / 4.f ) );
+		targets.push_back( Tensor<float>( 1, 1, static_cast<float>( i ) / 8.f ) );
+	}
+
+	opt.m_epochs = 2;
+	opt.m_batch_size = 2;
+	REQUIRE_NOTHROW( opt.train( inputs, targets ) );
+}
+
+TEST_CASE( "MomentumSGDOptimizer constructor and train runs without crash", "[sgd_optimizer][smoke]" )
+{
+	using SimpleNN = SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
+	auto linear = LinearLayer<Tensor<float>>( 2, 1 );
+	SimpleNN nn( linear );
+
+	MomentumSGDOptimizer<Tensor<float>, SimpleNN> opt( nn );
 
 	std::vector<Tensor<float>> inputs;
 	std::vector<Tensor<float>> targets;

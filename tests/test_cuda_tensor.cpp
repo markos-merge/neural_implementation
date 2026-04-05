@@ -1,6 +1,7 @@
 #include "cuda_tensor.hpp"
 #include "neural_cuda_runtime.hpp"
 #include "tensor.hpp"
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -285,7 +286,11 @@ TEST_CASE( "CudaTensor unary ops and reductions match expectations", "[cuda_tens
 	REQUIRE_THAT( m1( 1, 0 ), WithinAbs( 4.f, 1e-4f ) );
 
 	std::vector<float> buf( 4u );
+#if NEURAL_CUDA_ENABLED
 	a.copyToHost( buf.data() );
+#else
+	std::copy_n( a.data(), a.size(), buf.begin() );
+#endif
 	REQUIRE_THAT( buf[0], WithinAbs( 0.5f, 1e-5f ) );
 	REQUIRE_THAT( buf[3], WithinAbs( 4.f, 1e-5f ) );
 }

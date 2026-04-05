@@ -1,0 +1,80 @@
+{
+	"version": 3,
+	"cmakeMinimumRequired": {
+		"major": 3,
+		"minor": 19,
+		"patch": 0
+	},
+	"configurePresets": [
+		{
+			"name": "debug",
+			"displayName": "Debug",
+			"generator": "Ninja",
+			"binaryDir": "${sourceDir}/build_debug",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "Debug"
+			}
+		},
+		{
+			"name": "release",
+			"displayName": "Release",
+			"generator": "Ninja",
+			"binaryDir": "${sourceDir}/build_release",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "Release",
+				"ENABLE_OPENMP": "ON"
+			}
+		},
+		{
+			"name": "relwithdebinfo",
+			"displayName": "RelWithDebInfo",
+			"generator": "Ninja",
+			"binaryDir": "${sourceDir}/build_relwithdebinfo",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "RelWithDebInfo"
+			}
+		},
+		{
+			"name": "release-cuda",
+			"displayName": "Release (CUDA)",
+			"generator": "Ninja",
+			"binaryDir": "${sourceDir}/build_release_cuda",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "Release",
+				"NEURAL_ENABLE_CUDA": "ON"
+			}
+		},
+		{
+			"name": "relwithdebinfo-cuda",
+			"displayName": "RelWithDebInfo (CUDA)",
+			"generator": "Ninja",
+			"binaryDir": "${sourceDir}/build_relwithdebinfo_cuda",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "RelWithDebInfo",
+				"NEURAL_ENABLE_CUDA": "ON"
+			}
+		}
+	],
+	"buildPresets": [
+		{
+			"name": "debug",
+			"configurePreset": "debug"
+		},
+		{
+			"name": "release",
+			"configurePreset": "release"
+		},
+		{
+			"name": "relwithdebinfo",
+			"configurePreset": "relwithdebinfo"
+		},
+		{
+			"name": "release-cuda",
+			"configurePreset": "release-cuda"
+		},
+		{
+			"name": "relwithdebinfo-cuda",
+			"configurePreset": "relwithdebinfo-cuda"
+		}
+	]
+}

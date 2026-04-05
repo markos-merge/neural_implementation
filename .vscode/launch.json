@@ -1,0 +1,90 @@
+{
+  // "CMake: Debug last core" = export + gdb. "Run" = launch only: CMake Tools builds the active preset once (cmake.buildBeforeRun). No extra preLaunchTask — avoids double-building release + debug every F5.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "CMake: Debug last core",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${input:cmakeExe}",
+      "cwd": "${input:cmakeExeDir}",
+      "preLaunchTask": "Export coredump (systemd → file)",
+      "coreDumpPath": "${input:cmakeExe}.core",
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "stopAtEntry": false,
+      "presentation": {
+        "hidden": false,
+        "group": "CMake",
+        "order": 1
+      },
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
+    },
+    {
+      "name": "Run",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${input:cmakeExe}",
+      "args": [],
+      "cwd": "${input:cmakeExeDir}",
+      "stopAtEntry": false,
+      "console": "integratedTerminal",
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "presentation": {
+        "hidden": false,
+        "group": "CMake",
+        "order": 2
+      }
+    },
+    {
+      "name": "Core dump (gdb)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${input:cmakeExe}",
+      "cwd": "${input:cmakeExeDir}",
+      "coreDumpPath": "${input:coreDumpPath}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "stopAtEntry": false,
+      "presentation": {
+        "hidden": false,
+        "group": "CMake",
+        "order": 3
+      },
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
+    }
+  ],
+  "inputs": [
+    {
+      "id": "cmakeExe",
+      "type": "command",
+      "command": "cmake.launchTargetPath",
+      "args": {}
+    },
+    {
+      "id": "cmakeExeDir",
+      "type": "command",
+      "command": "cmake.launchTargetDirectory",
+      "args": {}
+    },
+    {
+      "id": "coreDumpPath",
+      "type": "command",
+      "command": "extension.commandvariable.file.pickFile",
+      "description": "Select the core dump file to debug"
+    }
+  ]
+}

@@ -6,8 +6,10 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#if NEURAL_CUDA_ENABLED
 #include <cuda_runtime.h>
 #include <driver_types.h>
+#endif
 #include <algorithm>
 #include <iterator>
 #include <random>
@@ -18,11 +20,15 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+#if NEURAL_CUDA_ENABLED
 #include "cublas_handle.hpp"
-#include "tensor.hpp"
 #include <cublas_v2.h>
+#endif
+#include "tensor.hpp"
 
 namespace neural {
+
+#if NEURAL_CUDA_ENABLED
 
 namespace detail {
 
@@ -1746,6 +1752,14 @@ void CudaTensor<T>::copyToHost( T *host ) const
 	}
 }
 
-}
+
+#else // NEURAL_CUDA_ENABLED
+
+template <typename T>
+using CudaTensor = Tensor<T>;
+
+#endif // NEURAL_CUDA_ENABLED
+
+} // namespace neural
 
 #endif

@@ -1,0 +1,11 @@
+{
+	"cmake.useCMakePresets": "always",
+	"cmake.configurePreset": "release",
+	"cmake.buildPreset": "release",
+	"cmake.generator": "Ninja",
+	"cmake.buildBeforeRun": true,
+	"cmake.buildTask": false,
+	"files.associations": {
+		"*.hpp": "cpp"
+	}
+}

@@ -25,6 +25,7 @@ class Tensor
 	public:
 		Tensor() noexcept;
 		Tensor( std::size_t rows, std::size_t cols ) noexcept;
+		Tensor( std::array<std::size_t, 2> shape ) noexcept;
 		template <std::random_access_iterator It>
 		Tensor( std::size_t rows, std::size_t cols, It begin, It end );
 		Tensor( std::size_t rows, std::size_t cols, value_type value ) noexcept;
@@ -37,12 +38,16 @@ class Tensor
 		std::size_t rows() const;
 		std::size_t cols() const;
 		std::size_t size() const;
+		std::array<std::size_t, 2> shape() const;
+		value_type *data() noexcept;
+		value_type const *data() const noexcept;
 
 		value_type operator()( std::size_t row, std::size_t col );
 		value_type const operator()( std::size_t row, std::size_t col ) const;
 	
 		void assign( std::size_t row, std::size_t col, value_type value );
 		void assign( value_type value );
+		void assign( value_type const *data, std::size_t size );
 
 		void assignTensorAsRow( std::size_t row, Tensor const &other );
 		void assignTensor( value_type *value, std::size_t size );
@@ -62,6 +67,7 @@ class Tensor
 
 		Tensor divideRowsWithCol( Tensor const &other ) const;
 		Tensor &divideRowsWithColInPlace( Tensor const &other );
+		Tensor &mulNSubstractInPlace( Tensor const &other, Tensor::value_type scalar );
 
 		value_type maxCoeff() const;
 
@@ -109,6 +115,13 @@ Tensor<T>::Tensor() noexcept : m_mat( 0, 0 )
 template <typename T>
 Tensor<T>::Tensor( std::size_t rows, std::size_t cols ) noexcept
     : m_mat( rows, cols )
+{
+	m_mat.setZero();
+}
+
+template <typename T>
+Tensor<T>::Tensor( std::array<std::size_t, 2> shape ) noexcept
+    : m_mat( shape[0], shape[1] )
 {
 	m_mat.setZero();
 }
@@ -185,6 +198,24 @@ std::size_t Tensor<T>::size() const
 }
 
 template <typename T>
+std::array<std::size_t, 2> Tensor<T>::shape() const
+{
+	return { rows(), cols() };
+}
+
+template <typename T>
+T *Tensor<T>::data() noexcept
+{
+	return m_mat.data();
+}
+
+template <typename T>
+T const *Tensor<T>::data() const noexcept
+{
+	return m_mat.data();
+}
+
+template <typename T>
 typename Tensor<T>::value_type Tensor<T>::operator()( std::size_t row,
                                                       std::size_t col )
 {
@@ -235,6 +266,16 @@ void Tensor<T>::assignTensor( value_type *value, std::size_t size )
 		    "Tensor::assignTensor(): size must be equal to the number of elements in the tensor" );
 	}
 	m_mat = Eigen::Map<Eigen::Matrix<value_type, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>( value, m_mat.rows(), m_mat.cols() );
+}
+
+template <typename T>
+void Tensor<T>::assign( value_type const *data, std::size_t size )
+{
+	if ( size != static_cast<std::size_t>( m_mat.size() ) ) {
+		throw std::invalid_argument(
+		    "Tensor::assign(): size does not match tensor size" );
+	}
+	m_mat = Eigen::Map<const Eigen::Matrix<value_type, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>( data, m_mat.rows(), m_mat.cols() );
 }
 
 template < typename T >
@@ -385,6 +426,14 @@ template <typename T>
 Tensor<T> &Tensor<T>::divideRowsWithColInPlace( Tensor const &other )
 {
 	m_mat.array().colwise() /= other.m_mat.col( 0 ).array();
+	return *this;
+}
+
+template < typename T >
+Tensor<T> &Tensor<T>::mulNSubstractInPlace( Tensor const &other, Tensor::value_type scalar )
+{
+	m_mat -= other.m_mat*scalar;
+	
 	return *this;
 }
 

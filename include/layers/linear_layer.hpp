@@ -6,9 +6,14 @@
 namespace neural {
 
 template <typename Tensor>
-class LinearLayer : public LayerBase< Tensor >
+class LinearLayer : public LayerBase<Tensor>
 {
-	static_assert( TensorLike<Tensor>, "Tensor must be a TensorLike type" );
+		static_assert( TensorLike<Tensor>, "Tensor must be a TensorLike type" );
+
+	public:
+		using tensor_t = Tensor;
+		using bias_t = Tensor;
+
 	public:
 		LinearLayer( std::size_t in_features, std::size_t out_features );
 		LinearLayer( Tensor const &weights, Tensor const &bias );
@@ -24,6 +29,7 @@ class LinearLayer : public LayerBase< Tensor >
 		Tensor &getBias();
 		Tensor const &getWeights() const;
 		Tensor const &getBias() const;
+
 	private:
 		Tensor m_weights;
 		Tensor m_bias;

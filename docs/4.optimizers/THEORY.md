@@ -63,7 +63,27 @@ $$
 - Consistent gradients → $v$ grows → larger steps.
 - Oscillating gradients → $v$ partially cancels → smaller effective step.
 
-### 3.4 Summary Table
+### 3.4 Classical theory: heavy-ball (Polyak)
+
+Momentum is closely related to **Polyak’s heavy-ball method** (1960s). One view is **physical**: a particle with **mass** and **friction** moves in a potential given by the objective $f$. A continuous-time picture is a second-order system with damping; discretizing yields an update that depends on the **previous step** (difference of successive iterates), which is equivalent to maintaining a **velocity** $v_t$ as above.
+
+**Takeaway:** momentum is not a new model of the loss—it is a **stateful** update that reuses past gradient information to mimic **inertial** dynamics and damp oscillations.
+
+### 3.5 Nesterov accelerated gradient (NAG)
+
+**Nesterov’s accelerated gradient** (1983) uses a **look-ahead** gradient (evaluate $\nabla f$ at a point extrapolated along the previous velocity) or an equivalent two-sequence form. For **smooth convex** problems it improves **worst-case** convergence rates compared to vanilla gradient descent. Implementations often labeled “Nesterov momentum” are momentum-like but **not** identical to the heavy-ball iteration in the convex analysis—same family of ideas, different update.
+
+### 3.6 What theory says (short)
+
+- **Strongly convex quadratics:** Momentum can be tuned so convergence is much faster than gradient descent along the worst direction (related to the **condition number** of the Hessian). Lyapunov-style arguments explain stability and rate.
+- **General smooth convex / non-convex:** Guarantees are more delicate; for **SGD**, momentum **smooths** noisy gradients (helpful) but large $\beta$ can also slow adaptation to changing curvature—**$\eta$ and $\beta$ are tuned together**.
+
+### 3.7 Hyperparameters
+
+- **$\eta$:** learning rate; often scheduled (decay) during training.
+- **$\beta$:** typically in $[0.9,\,0.99]$ in deep learning—higher $\beta$ means longer memory and smoother updates; $\beta = 0$ recovers vanilla SGD.
+
+### 3.8 Summary Table
 
 | Quantity | Formula |
 |----------|---------|
@@ -201,6 +221,15 @@ Each trainable layer (e.g. `LinearLayer`) has parameters (weights, bias) and the
 
 ## 9. References
 
-- **Sutskever et al. (2013)**: On the importance of initialization and momentum in deep learning.
+Momentum and acceleration:
+
+- **Polyak, B. T.** — heavy-ball / momentum as classical method (see sources in `docs/SOURCES.md`).
+- **Nesterov, Y.** (1983) — accelerated gradient for smooth convex optimization.
+- **Sutskever et al. (2013)** — *On the importance of initialization and momentum in deep learning* (ICML); practical treatment of momentum in deep networks.
+
+Other optimizers:
+
 - **Tieleman & Hinton (2012)**: RMSprop (course slides).
 - **Kingma & Ba (2015)**: Adam: A Method for Stochastic Optimization.
+
+Full bibliographic entries and links: **`docs/SOURCES.md`**.

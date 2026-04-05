@@ -16,6 +16,8 @@ class SoftmaxCrossEntropyLoss
 {
 	static_assert( TensorLike<Tensor>, "Tensor must be a TensorLike type" );
 	public:
+		using tensor_t = Tensor;
+	public:
 		SoftmaxCrossEntropyLoss() = default;
 
 		Tensor forward( Tensor const &out, Tensor const &target );

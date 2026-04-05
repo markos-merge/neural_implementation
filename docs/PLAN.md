@@ -243,8 +243,8 @@ for (epoch : epochs) {
 
 ### Next: CNN core (CPU first)
 
-1. **4D tensor layout** – Agree on **NCHW** (batch, channels, height, width); helpers for padding, sizes *after conv/pool*
-2. **Conv2d** – forward + backward (reference: explicit loops or im2col + GEMM on CPU)
+1. **4D tensor layout** – Agree on **NCHW** (batch, channels, height, width); helpers for computing output sizes *after conv/pool* (given kernel and stride).
+2. **Conv2d** – forward + backward (reference: explicit loops or im2col + GEMM on CPU). **Initial implementation:** **no padding** (valid convolution), **stride 1** on height and width. **Future:** **stride > 1** (downsampling in the conv itself).
 3. **MaxPool2d** – forward + backward with stored argmax
 4. **Flatten** (or explicit reshape) – connect conv blocks to existing **Linear → Softmax**
 5. **End-to-end CNN** – e.g. `Conv → ReLU → Pool` × … → `Flatten → Linear → Softmax`; train on **MNIST**, then **CIFAR-10**

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <random>
 #include <functional>
+#include <type_traits>
 #include "layer.hpp"
 
 namespace neural {
@@ -14,10 +15,11 @@ template <typename Tensor, typename NN>
 class SGDOptimizer
 {
 	public:
+		/// Return true to request early stop; false continues training.
 		using ProgressCallback =
-		    std::function<void( std::size_t epoch, std::size_t epoch_max,
-		                       std::size_t batch_idx, std::size_t batch_max,
-		                       typename Tensor::value_type loss )>;
+		    std::function<bool( std::size_t epoch, std::size_t epoch_max,
+		                        std::size_t batch_idx, std::size_t batch_max,
+		                        typename Tensor::value_type loss )>;
 
 		SGDOptimizer( NN &nn );
 
@@ -40,17 +42,21 @@ namespace detail {
 template < typename Tensor, typename Layer >
 void updateParam_impl( Tensor &param, Tensor const &grad, typename Tensor::value_type learning_rate )
 {
-	param -= grad * learning_rate;
+	param.mulNSubstractInPlace( grad, learning_rate );
 }
 
 template< typename Tensor, typename Layer >
 void updateLayer_impl( Layer &layer, typename Tensor::value_type learning_rate )
 {
 	if constexpr ( UpdateableLayer< std::decay_t<Layer>, Tensor> ) {
-		updateParam_impl<Tensor, Layer>( layer.getWeights(), layer.getGradWeights(), learning_rate );
-		updateParam_impl<Tensor, Layer>( layer.getBias(), layer.getGradBias(), learning_rate );
+		updateParam_impl<typename std::decay_t<Layer>::tensor_t, typename std::decay_t<Layer>>( layer.getWeights(), layer.getGradWeights(), learning_rate );
+		updateParam_impl<typename std::decay_t<Layer>::bias_t, typename std::decay_t<Layer>>( layer.getBias(), layer.getGradBias(), learning_rate );
+	} else if constexpr ( requires( Layer &l ) { l.forEachLayer( []( auto && ) {} ); } ) {
+		layer.forEachLayer( [&]( auto &&sub ) {
+			detail::updateLayer_impl< typename std::decay_t<decltype(sub)>::tensor_t, std::decay_t<decltype(sub)> >( sub, learning_rate );
+		} );
 	} else {
-		//nop
+		
 	}
 }
 }// namespace detail
@@ -73,10 +79,8 @@ template< typename Tensor, typename NN >
 void SGDOptimizer<Tensor, NN>::initialize()
 {
 	m_nn.forEachLayer( [this]( auto &&layer ) {
-		if constexpr ( UpdateableLayer< std::decay_t<decltype( layer )>, Tensor> ) {
+		if constexpr ( requires { layer.initialize(); } ) {
 			layer.initialize();
-		} else {
-			//nop
 		}
 	} );
 }
@@ -125,6 +129,7 @@ void SGDOptimizer<Tensor_t, NN>::train( std::vector< Tensor_t > &inputs,
 	detail::copy_batch_to_tensor_block( targets_tensor, targets );
 
 	for( std::size_t epoch = 0; epoch < this->m_epochs; ++epoch ) {
+		bool stop_training = false;
 		std::vector< std::size_t > batch_indices( inputs.size() );
 		std::iota( batch_indices.begin(), batch_indices.end(), 0 );
 		std::shuffle( batch_indices.begin(), batch_indices.end(),
@@ -146,9 +151,14 @@ void SGDOptimizer<Tensor_t, NN>::train( std::vector< Tensor_t > &inputs,
 
 			applyStep();
 
-			if ( callback )
-				callback( epoch, m_epochs, batch_idx, total_batches, loss );
+			if ( callback && callback( epoch, m_epochs, batch_idx, total_batches, loss ) ) {
+				stop_training = true;
+				break;
+			}
 			++batch_idx;
+		}
+		if ( stop_training ) {
+			break;
 		}
 	}
 }

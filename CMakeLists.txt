@@ -11,20 +11,30 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Release only: strong optimization + SIMD tuned to the *build* machine (Eigen benefits).
+# Release: -O3 + native tuning. RelWithDebInfo: CMake supplies -O2 -g -DNDEBUG; we add the same
+# -march=native as Release and -fno-omit-frame-pointer so profilers (e.g. perf) get usable stacks.
 # GCC/Clang: -march=native may emit AVX/AVX2; binaries can fail on older CPUs than the builder’s.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 	add_compile_options(
 		$<$<CONFIG:Release>:-O3>
 		$<$<CONFIG:Release>:-march=native>
+		$<$<CONFIG:RelWithDebInfo>:-march=native>
+		$<$<CONFIG:RelWithDebInfo>:-fno-omit-frame-pointer>
 	)
 elseif(MSVC)
-	add_compile_options($<$<CONFIG:Release>:/O2>)
+	add_compile_options(
+		$<$<CONFIG:Release>:/O2>
+		$<$<CONFIG:RelWithDebInfo>:/O2>
+	)
 endif()
 
-option(NEURAL_ENABLE_CUDA "Enable CUDA language and link CUDA runtime" ON)
+# Use mold linker for faster link times (GCC/Clang only).
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+	add_link_options(-fuse-ld=mold)
+endif()
 
-set(NEURAL_CUDA_FOUND OFF)
+option(NEURAL_ENABLE_CUDA "Enable CUDA language and link CUDA runtime" OFF)
+
 if(NEURAL_ENABLE_CUDA)
 	include(CheckLanguage)
 	check_language(CUDA)
@@ -48,8 +58,11 @@ if(NEURAL_ENABLE_CUDA)
 	endif()
 endif()
 
-# Eigen
-find_package(Eigen3 3.3 REQUIRED NO_MODULE)
+# Eigen (system-installed 5.x under /usr/share/eigen3/cmake)
+find_package(Eigen3 REQUIRED NO_MODULE
+	HINTS /usr/share/eigen3/cmake)
+
+find_package( OpenMP )
 
 # Catch2 for tests (prefer system package to avoid FetchContent rebuilds)
 find_package(Catch2 3 QUIET)
@@ -91,8 +104,16 @@ target_include_directories(neural_impl_lib PUBLIC
 )
 target_link_libraries(neural_impl_lib PUBLIC Eigen3::Eigen)
 
+option(ENABLE_OPENMP "Enable OpenMP" ON)
+if( ENABLE_OPENMP AND OpenMP_CXX_FOUND )
+	message( STATUS "OPENMP enabled" )
+	target_link_libraries( neural_impl_lib PUBLIC OpenMP::OpenMP_CXX )
+else()
+	message( STATUS "OPENMP DISABLED" )
+endif()
+
 # Main executable (entry point remains src/main.cpp; demos are under src/app/)
-add_executable(neural_implementation src/main.cpp src/app/mnist_demo.cpp src/app/cifar_demo.cpp)
+add_executable(neural_implementation src/main.cpp src/app/mnist_demo.cpp src/app/cifar_demo.cpp src/app/conv_demo.cpp src/app/conv_demo_momentum.cpp)
 target_link_libraries(neural_implementation PRIVATE neural_impl_lib)
 
 # Tests
@@ -109,6 +130,8 @@ add_executable(tests
     tests/test_loss.cpp
     tests/test_sequential_nn.cpp
     tests/test_sgd_optimizer.cpp
+    tests/test_conv_backward.cpp
+    tests/test_max_pool_layer.cpp
 )
 target_link_libraries(tests PRIVATE Catch2::Catch2WithMain neural_impl_lib)
 target_include_directories(tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)

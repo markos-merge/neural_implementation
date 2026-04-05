@@ -16,6 +16,66 @@
 #include <vector>
 
 namespace neural {
+
+template <typename Tensor, typename Loss, typename ... Layers>
+class SequentialNN
+{
+	static_assert( TensorLike<Tensor>, "Tensor must be a TensorLike type" );
+	public:
+		using tensor_tuple_t = std::tuple<Layers...>;
+	public:
+		explicit SequentialNN( Layers... layers );
+
+		Tensor forward( Tensor const &input );
+		Tensor backward( Tensor const &grad_output );
+
+		/// Resize slot buffers (and target buffer) for a batch of shape \p batch_rows × \p input_cols.
+		void ensureBuffersForShape( std::size_t batch_rows, std::size_t input_cols );
+
+		/// Loss targets for the current batch; same shape as the network output (last slot).
+		Tensor &targetBuffer();
+
+		/// Run forward + loss + backward using activations already in the input latch and
+		/// targets in \ref targetBuffer.
+		typename Tensor::value_type trainStep();
+
+		typename Tensor::value_type trainStep( Tensor const &input, Tensor const &target );
+
+		template < typename UnaryOp >
+		void forEachLayer( UnaryOp &&op );
+
+		/// Zip each top-level layer with the matching element of \p zip_tuple (same arity as \c Layers...).
+		template < typename Tuple, typename F >
+		void forEachLayerZip( Tuple &zip_tuple, F &&f );
+
+		LatchLayer< Tensor > &inputLatch();
+		LatchLayer< Tensor > const &inputLatch() const;
+		LatchLayer< Tensor > &outputLatch();
+		LatchLayer< Tensor > const &outputLatch() const;
+
+		TerminalLatchLayer< Tensor > const &inputTerminalLatch() const;
+		TerminalLatchLayer< Tensor > const &outputTerminalLatch() const;
+
+	private:
+		void ensure_buffers( Tensor const &input );
+		void wire_layers();
+		void runForwardFromInputSlot();
+		typename Tensor::value_type runTrainStepFromMappedBuffers();
+
+		template < std::size_t... Is >
+		void backward_reverse_ptr( std::index_sequence<Is...> );
+
+		std::tuple< Layers... > m_layers;
+		Loss m_loss;
+
+		std::vector<LatchLayer<Tensor>> m_slots;
+		TerminalLatchLayer<Tensor> m_input_terminal;
+		TerminalLatchLayer<Tensor> m_output_terminal;
+		Tensor m_target;
+		bool m_buffers_ready = false;
+		std::vector<std::pair<std::size_t, std::size_t>> m_cached_slot_dims;
+};
+
 namespace detail {
 
 inline bool slot_dims_equal( std::vector<std::pair<std::size_t, std::size_t>> const &a,
@@ -75,60 +135,7 @@ std::vector<std::pair<std::size_t, std::size_t>> infer_slot_shapes( Tensor const
 }
 
 } // namespace detail
-
-template <typename Tensor, typename Loss, typename ... Layers>
-class SequentialNN
-{
-	static_assert( TensorLike<Tensor>, "Tensor must be a TensorLike type" );
-	public:
-		explicit SequentialNN( Layers... layers );
-
-		Tensor forward( Tensor const &input );
-		Tensor backward( Tensor const &grad_output );
-
-		/// Resize slot buffers (and target buffer) for a batch of shape \p batch_rows × \p input_cols.
-		void ensureBuffersForShape( std::size_t batch_rows, std::size_t input_cols );
-
-		/// Loss targets for the current batch; same shape as the network output (last slot).
-		Tensor &targetBuffer();
-
-		/// Run forward + loss + backward using activations already in the input latch and
-		/// targets in \ref targetBuffer.
-		typename Tensor::value_type trainStep();
-
-		typename Tensor::value_type trainStep( Tensor const &input, Tensor const &target );
-
-		template < typename UnaryOp >
-		void forEachLayer( UnaryOp &&op );
-
-		LatchLayer< Tensor > &inputLatch();
-		LatchLayer< Tensor > const &inputLatch() const;
-		LatchLayer< Tensor > &outputLatch();
-		LatchLayer< Tensor > const &outputLatch() const;
-
-		TerminalLatchLayer< Tensor > const &inputTerminalLatch() const;
-		TerminalLatchLayer< Tensor > const &outputTerminalLatch() const;
-
-	private:
-		void ensure_buffers( Tensor const &input );
-		void wire_layers();
-		void runForwardFromInputSlot();
-		typename Tensor::value_type runTrainStepFromMappedBuffers();
-
-		template < std::size_t... Is >
-		void backward_reverse_ptr( std::index_sequence<Is...> );
-
-		std::tuple< Layers... > m_layers;
-		Loss m_loss;
-
-		std::vector<LatchLayer<Tensor>> m_slots;
-		TerminalLatchLayer<Tensor> m_input_terminal;
-		TerminalLatchLayer<Tensor> m_output_terminal;
-		Tensor m_target;
-		bool m_buffers_ready = false;
-		std::vector<std::pair<std::size_t, std::size_t>> m_cached_slot_dims;
-};
-
+//
 template < typename Tensor, typename Loss, typename ...Layers >
 SequentialNN<Tensor, Loss, Layers...>::SequentialNN( Layers... layers )
 	: m_layers( std::forward<Layers>( layers )... )
@@ -262,6 +269,21 @@ template < typename UnaryOp >
 void SequentialNN<Tensor, Loss, Layers...>::forEachLayer( UnaryOp &&op )
 {
 	std::apply( [&op]( auto &&...args ) { (op( args ), ...); }, m_layers );
+}
+
+template < typename Tensor, typename Loss, typename ...Layers >
+template < typename Tuple, typename F >
+void SequentialNN<Tensor, Loss, Layers...>::forEachLayerZip( Tuple &zip_tuple, F &&f )
+{
+	std::apply(
+	    [&f, &zip_tuple]( auto &...layer_args ) {
+		    std::apply(
+		        [&f, &layer_args...]( auto &...zip_args ) {
+			        (void)( ( f( layer_args, zip_args ), ... ), 0 );
+		        },
+		        zip_tuple );
+	    },
+	    m_layers );
 }
 
 template < typename Tensor, typename Loss, typename ...Layers >

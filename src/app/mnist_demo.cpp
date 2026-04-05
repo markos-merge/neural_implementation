@@ -114,9 +114,9 @@ void run_mnist_demo()
 	auto last_epoch_end = std::chrono::steady_clock::now();
 	opt.train( train_data.images, train_data.labels,
 	           [&]( std::size_t epoch, std::size_t epoch_max, std::size_t batch_idx,
-	                std::size_t batch_max, float loss ) {
+	                std::size_t batch_max, float loss ) -> bool {
 		           if ( batch_idx + 1 < batch_max ) {
-			           return;
+			           return false;
 		           }
 		           auto const now = std::chrono::steady_clock::now();
 		           double const epoch_sec =
@@ -125,6 +125,7 @@ void run_mnist_demo()
 		           std::string const prefix = "Epoch " + std::to_string( epoch + 1 ) + "/" +
 		                                       std::to_string( epoch_max ) + " ";
 		           draw_progress_bar( epoch + 1, epoch_max, loss, epoch_sec, prefix.c_str() );
+		           return false;
 	           } );
 	std::cout << "\n";
 
