@@ -29,9 +29,7 @@ using TensorN_t  = neural::TensorN<4, float>;
 //   Conv(16→32, k=3): (N, 16, 15, 15) → (N, 32, 13, 13)   [15-2]
 //   ReLU
 //   MaxPool(2, 2)   : (N, 32, 13, 13) → (N, 32, 6, 6)     [(13-2)/2+1 = 6]
-// flat_output_cols = 32 * 6 * 6 = 1152
-static constexpr std::size_t kFlatOut = 32 * 6 * 6;
-
+// Flattened conv tail width is inferred inside ConvolutionalBox from layer geometry.
 using ConvBox_t = neural::ConvolutionalBox<
     TensorN_t, Tensor2D_t,
     neural::ConvolutionalLayer<TensorN_t>,
@@ -122,24 +120,25 @@ void run_conv_demo()
 	std::cout << ".\n";
 
 	ConvBox_t box(
-	    3, 32, 32, kFlatOut,
-	    neural::ConvolutionalLayer<TensorN_t>( 3, 16, 3 ),
+	    3, 32, 32,
+	    neural::ConvolutionalLayer<TensorN_t>( 16, 3 ),
 	    neural::ReLULayer<TensorN_t>(),
 	    neural::MaxPoolLayer<TensorN_t>( 2, 2 ),
-	    neural::ConvolutionalLayer<TensorN_t>( 16, 32, 3 ),
+	    neural::ConvolutionalLayer<TensorN_t>( 32, 3 ),
 	    neural::ReLULayer<TensorN_t>(),
 	    neural::MaxPoolLayer<TensorN_t>( 2, 2 ) );
 
 	ConvNN_t nn(
 	    box,
-	    neural::LinearLayer<Tensor2D_t>( kFlatOut, 256 ),
+	    neural::LinearLayer<Tensor2D_t>( 256 ),
 	    neural::ReLULayer<Tensor2D_t>(),
-	    neural::LinearLayer<Tensor2D_t>( 256, 10 ) );
+	    neural::LinearLayer<Tensor2D_t>( 10 ) );
 
 	neural::SGDOptimizer<Tensor2D_t, ConvNN_t> opt( nn );
 	opt.m_learning_rate = 0.01f;
 	opt.m_batch_size    = 1024;
 	opt.m_epochs        = 1000;
+	opt.m_l2_regularizer = 0.0001f;
 
 	auto last_epoch_end = std::chrono::steady_clock::now();
 	float loss_sum_epoch = 0.f;

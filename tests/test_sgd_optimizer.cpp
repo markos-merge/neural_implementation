@@ -33,7 +33,7 @@ using NN = SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tenso
 TEST_CASE( "SequentialNN trainStep with batch works", "[sgd_optimizer][smoke]" )
 {
 	using SimpleNN = SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
-	auto linear = LinearLayer<Tensor<float>>( 2, 1 );
+	auto linear = LinearLayer<Tensor<float>>( 1 );
 	SimpleNN nn( linear );
 
 	Tensor<float> batch_input( 2, 2, 1.0f );
@@ -46,7 +46,7 @@ TEST_CASE( "SequentialNN trainStep with batch works", "[sgd_optimizer][smoke]" )
 TEST_CASE( "Manual batch build and trainStep", "[sgd_optimizer][smoke]" )
 {
 	using SimpleNN = SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
-	auto linear = LinearLayer<Tensor<float>>( 2, 1 );
+	auto linear = LinearLayer<Tensor<float>>( 1 );
 	SimpleNN nn( linear );
 
 	// Use explicit data - batch (2, 2) and targets (2, 1)
@@ -63,7 +63,7 @@ TEST_CASE( "Manual batch build and trainStep", "[sgd_optimizer][smoke]" )
 TEST_CASE( "SGDOptimizer constructor and train runs without crash", "[sgd_optimizer][smoke]" )
 {
 	using SimpleNN = SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
-	auto linear = LinearLayer<Tensor<float>>( 2, 1 );
+	auto linear = LinearLayer<Tensor<float>>( 1 );
 	SimpleNN nn( linear );
 
 	SGDOptimizer<Tensor<float>, SimpleNN> opt( nn );
@@ -83,7 +83,7 @@ TEST_CASE( "SGDOptimizer constructor and train runs without crash", "[sgd_optimi
 TEST_CASE( "MomentumSGDOptimizer constructor and train runs without crash", "[sgd_optimizer][smoke]" )
 {
 	using SimpleNN = SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
-	auto linear = LinearLayer<Tensor<float>>( 2, 1 );
+	auto linear = LinearLayer<Tensor<float>>( 1 );
 	SimpleNN nn( linear );
 
 	MomentumSGDOptimizer<Tensor<float>, SimpleNN> opt( nn );
@@ -135,7 +135,7 @@ TEST_CASE( "SGDOptimizer training reduces loss on simple regression", "[sgd_opti
 TEST_CASE( "SGDOptimizer updates parameters after backward", "[sgd_optimizer][update]" )
 {
 	using SimpleNN = SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
-	auto linear = LinearLayer<Tensor<float>>( 2, 1 );
+	auto linear = LinearLayer<Tensor<float>>( 1 );
 	SimpleNN nn( linear );
 
 	SGDOptimizer<Tensor<float>, SimpleNN> opt( nn );
@@ -155,9 +155,9 @@ TEST_CASE( "SGDOptimizer updates parameters after backward", "[sgd_optimizer][up
 
 TEST_CASE( "SGDOptimizer works with network containing ReLU", "[sgd_optimizer][relu]" )
 {
-	auto linear1 = LinearLayer<Tensor<float>>( 2, 4 );
+	auto linear1 = LinearLayer<Tensor<float>>( 4 );
 	auto relu = ReLULayer<Tensor<float>>();
-	auto linear2 = LinearLayer<Tensor<float>>( 4, 1 );
+	auto linear2 = LinearLayer<Tensor<float>>( 1 );
 	NN nn( linear1, relu, linear2 );
 
 	SGDOptimizer<Tensor<float>, NN> opt( nn );

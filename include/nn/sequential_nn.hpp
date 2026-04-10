@@ -96,7 +96,7 @@ template <typename Tensor >
 std::pair<std::size_t, std::size_t> next_slot_shape( LinearLayer<Tensor> const &l,
                                                      std::pair<std::size_t, std::size_t> const &in )
 {
-	return { in.first, l.getWeights().cols() };
+	return { in.first, l.outFeatures() };
 }
 
 template < typename Tensor >

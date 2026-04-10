@@ -24,6 +24,8 @@ When you ask for help:
 
 **Current focus:** **Convolutional Neural Networks (CNNs)** — new layers, 4D tensors (NCHW), conv backward, pooling, then GPU acceleration of conv/pool (see Section 12).
 
+**Planned for stronger CIFAR-10 results:** **Batch normalization** (conv blocks), **train-time augmentation** (random crop 32×32 + horizontal flip), **LR schedule** (cosine or step decay) with **longer training** — see §12 *Strong CIFAR-10 training recipe (planned)*.
+
 ---
 
 ## 1. Theory Foundation
@@ -264,6 +266,7 @@ for (epoch : epochs) {
 1. **L2 and/or L1 regularization** – add to total loss or via optimizer `weight_decay`; verify gradients on a toy net
 2. **Train/validation split + early stopping** – track validation metric, `patience`, restore best weights (validation runs with **dropout off**)
 3. **Smaller footprints** – favor narrower/fewer layers in experiments; optional later: magnitude pruning, INT8/FP16 storage (document in THEORY when you tackle it)
+4. **CIFAR-10 strong baselines** – BatchNorm after convs, train-only augmentation (random crop + flip), LR schedule (cosine or step) + long runs; see **§12 — Strong CIFAR-10 training recipe (planned)**
 
 ---
 
@@ -329,6 +332,19 @@ for (epoch : epochs) {
 
 - Tests pass for conv and pool (including gradient check on small cases).
 - Training loss decreases on MNIST with a simple CNN; CIFAR-10 shows sensible learning vs your old MLP baseline (exact accuracy target is optional—stability matters first).
+
+### Strong CIFAR-10 training recipe (planned)
+
+To move from “learning curves look good” toward **competitive test accuracy** (e.g. **~90%+** on CIFAR-10), plan these **in addition to** a sufficiently deep/wide conv backbone (e.g. ResNet-style blocks are the usual reference):
+
+| Piece | Role |
+| ----- | ---- |
+| **Batch normalization** | After conv layers (and often before activation, depending on convention): stabilizes optimization, allows higher learning rates, improves accuracy. Requires **train vs eval** behavior (running mean/var updated in training; fixed stats at inference). |
+| **Data augmentation (train only)** | **Random crop** to 32×32 (with padding) + **horizontal flip** are the standard minimum; reduces overfitting and improves generalization. Optional later: Cutout, stronger policies. |
+| **Learning rate schedule** | **Cosine decay** or **step decay** of LR; pair with **many epochs** (often 200–350 in published recipes). Constant LR alone often plateaus below what a schedule can reach. |
+| **Weight decay** | L2 on weights (often used together with BN + schedule); add to planning alongside existing regularization notes (Section 13). |
+
+**Expectation:** A tiny 2-block CNN may still sit in the **~70–80%** range without augmentation and normalization; **>90%** usually assumes **BatchNorm + aug + schedule + enough capacity** (and often longer training), not hyperparameter tweaks alone.
 
 ---
 

@@ -1,4 +1,5 @@
 #include "conv_demo_momentum.hpp"
+#include "batch_norm_layer.hpp"
 #include "cifar10_loader.hpp"
 #include "convolutional_box.hpp"
 #include "convolutional_layer.hpp"
@@ -21,14 +22,14 @@ namespace {
 using Tensor2D_t = neural::Tensor<float>;
 using TensorN_t  = neural::TensorN<4, float>;
 
-static constexpr std::size_t kFlatOut = 32 * 6 * 6;
-
 using ConvBox_t = neural::ConvolutionalBox<
     TensorN_t, Tensor2D_t,
     neural::ConvolutionalLayer<TensorN_t>,
+    neural::BatchNormLayer<TensorN_t>,
     neural::ReLULayer<TensorN_t>,
     neural::MaxPoolLayer<TensorN_t>,
     neural::ConvolutionalLayer<TensorN_t>,
+    neural::BatchNormLayer<TensorN_t>,
     neural::ReLULayer<TensorN_t>,
     neural::MaxPoolLayer<TensorN_t>>;
 
@@ -69,9 +70,18 @@ std::size_t argmax( Tensor2D_t const &t )
 	return best;
 }
 
+auto set_bn_training = []( ConvNN_t &nn, bool training ) {
+	nn.forEachLayer( [training]( auto &layer ) {
+		if constexpr ( requires { layer.set_training( training ); } ) {
+			layer.set_training( training );
+		}
+	} );
+};
+
 float compute_accuracy( ConvNN_t &nn, std::vector<Tensor2D_t> const &images,
                         std::vector<Tensor2D_t> const &labels )
 {
+	set_bn_training( nn, false );
 	std::size_t correct = 0;
 	for ( std::size_t i = 0; i < images.size(); ++i ) {
 		auto const out   = nn.forward( images[i] );
@@ -85,6 +95,7 @@ float compute_accuracy( ConvNN_t &nn, std::vector<Tensor2D_t> const &images,
 		if ( pred == gt )
 			++correct;
 	}
+	set_bn_training( nn, true );
 	return static_cast<float>( correct ) / static_cast<float>( images.size() );
 }
 
@@ -115,25 +126,28 @@ void run_conv_demo_momentum()
 	std::cout << ".\n";
 
 	ConvBox_t box(
-	    3, 32, 32, kFlatOut,
-	    neural::ConvolutionalLayer<TensorN_t>( 3, 16, 3 ),
+	    3, 32, 32,
+	    neural::ConvolutionalLayer<TensorN_t>( 16, 3 ),
+	    neural::BatchNormLayer<TensorN_t>( 16, 1e-5f, 0.9f ),
 	    neural::ReLULayer<TensorN_t>(),
 	    neural::MaxPoolLayer<TensorN_t>( 2, 2 ),
-	    neural::ConvolutionalLayer<TensorN_t>( 16, 32, 3 ),
+	    neural::ConvolutionalLayer<TensorN_t>( 32, 3 ),
+	    neural::BatchNormLayer<TensorN_t>( 32, 1e-5f, 0.9f ),
 	    neural::ReLULayer<TensorN_t>(),
 	    neural::MaxPoolLayer<TensorN_t>( 2, 2 ) );
 
 	ConvNN_t nn(
 	    box,
-	    neural::LinearLayer<Tensor2D_t>( kFlatOut, 256 ),
+	    neural::LinearLayer<Tensor2D_t>( 256 ),
 	    neural::ReLULayer<Tensor2D_t>(),
-	    neural::LinearLayer<Tensor2D_t>( 256, 10 ) );
+	    neural::LinearLayer<Tensor2D_t>( 10 ) );
 
 	neural::MomentumSGDOptimizer<Tensor2D_t, ConvNN_t> opt( nn );
 	opt.m_learning_rate = 0.01f;
 	opt.m_momentum      = 0.9f;
 	opt.m_batch_size    = 1024;
-	opt.m_epochs        = 1000;
+	opt.m_epochs        = 300;
+	opt.m_l2_regularizer = 0.001f;
 
 	auto                 last_epoch_end  = std::chrono::steady_clock::now();
 	float                loss_sum_epoch = 0.f;

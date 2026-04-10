@@ -23,7 +23,9 @@ class SGDOptimizer
 
 		SGDOptimizer( NN &nn );
 
-		typename Tensor::value_type m_learning_rate = static_cast<typename Tensor::value_type>(0.01);
+		typename Tensor::value_type m_learning_rate = static_cast<typename Tensor::value_type>( 0.01 );
+		/// \(\lambda\) for \(\frac{\lambda}{2}\|W\|^2\) on **weights only** (biases are not regularized—standard practice). If training stalls or diverges, lower \(\lambda\) or \c m_learning_rate.
+		typename Tensor::value_type m_l2_regularizer = static_cast< typename Tensor::value_type>( 0. );
 		std::size_t m_batch_size = 50;
 		std::size_t m_epochs = 100;
 
@@ -40,20 +42,25 @@ class SGDOptimizer
 namespace detail {
 
 template < typename Tensor, typename Layer >
-void updateParam_impl( Tensor &param, Tensor const &grad, typename Tensor::value_type learning_rate )
+void updateParam_impl( Tensor &param, Tensor const &grad, typename Tensor::value_type learning_rate, typename Tensor::value_type l2_regularizer )
 {
+	if( l2_regularizer > 0. ) {
+		param.mulNSubstractInPlace( param, learning_rate*l2_regularizer );
+	}
 	param.mulNSubstractInPlace( grad, learning_rate );
 }
 
 template< typename Tensor, typename Layer >
-void updateLayer_impl( Layer &layer, typename Tensor::value_type learning_rate )
+void updateLayer_impl( Layer &layer, typename Tensor::value_type learning_rate, typename Tensor::value_type l2_regularizer )
 {
 	if constexpr ( UpdateableLayer< std::decay_t<Layer>, Tensor> ) {
-		updateParam_impl<typename std::decay_t<Layer>::tensor_t, typename std::decay_t<Layer>>( layer.getWeights(), layer.getGradWeights(), learning_rate );
-		updateParam_impl<typename std::decay_t<Layer>::bias_t, typename std::decay_t<Layer>>( layer.getBias(), layer.getGradBias(), learning_rate );
+		updateParam_impl<typename std::decay_t<Layer>::tensor_t, typename std::decay_t<Layer>>( layer.getWeights(), layer.getGradWeights(), learning_rate, l2_regularizer );
+		updateParam_impl<typename std::decay_t<Layer>::bias_t, typename std::decay_t<Layer>>(
+		    layer.getBias(), layer.getGradBias(), learning_rate,
+		    static_cast<typename Tensor::value_type>( 0 ) );
 	} else if constexpr ( requires( Layer &l ) { l.forEachLayer( []( auto && ) {} ); } ) {
 		layer.forEachLayer( [&]( auto &&sub ) {
-			detail::updateLayer_impl< typename std::decay_t<decltype(sub)>::tensor_t, std::decay_t<decltype(sub)> >( sub, learning_rate );
+			detail::updateLayer_impl< typename std::decay_t<decltype(sub)>::tensor_t, std::decay_t<decltype(sub)> >( sub, learning_rate, l2_regularizer );
 		} );
 	} else {
 		
@@ -71,7 +78,7 @@ template <typename Tensor, typename NN>
 void SGDOptimizer<Tensor, NN>::applyStep()
 {
 	m_nn.forEachLayer( [this]( auto &&layer ) {
-		detail::updateLayer_impl<Tensor>( layer, this->m_learning_rate );
+		detail::updateLayer_impl<Tensor>( layer, this->m_learning_rate, this->m_l2_regularizer );
 	} );
 }
 
@@ -114,7 +121,6 @@ void SGDOptimizer<Tensor_t, NN>::train( std::vector< Tensor_t > &inputs,
                                      std::vector< Tensor_t > &targets,
                                      typename SGDOptimizer<Tensor_t, NN>::ProgressCallback callback )
 {
-	initialize();
 	// Only full batches so buffer shapes stay fixed (remainder samples are skipped each epoch).
 	std::size_t const total_batches = inputs.size() / m_batch_size;
 	if ( total_batches == 0 ) {

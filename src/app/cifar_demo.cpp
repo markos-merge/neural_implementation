@@ -110,11 +110,11 @@ void run_cifar10_demo()
 	}
 	std::cout << " (input dim " << neural::cifar10_input_dim << ").\n";
 
-	auto linear1 = neural::LinearLayer<Tensor_t>( neural::cifar10_input_dim, 256 );
+	auto linear1 = neural::LinearLayer<Tensor_t>( 256 );
 	auto relu1 = neural::ReLULayer<Tensor_t>();
-	auto linear2 = neural::LinearLayer<Tensor_t>( 256, 128 );
+	auto linear2 = neural::LinearLayer<Tensor_t>( 128 );
 	auto relu2 = neural::ReLULayer<Tensor_t>();
-	auto linear3 = neural::LinearLayer<Tensor_t>( 128, 10 );
+	auto linear3 = neural::LinearLayer<Tensor_t>( 10 );
 
 	CifarNN nn( linear1, relu1, linear2, relu2, linear3 );
 

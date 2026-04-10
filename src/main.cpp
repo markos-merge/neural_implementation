@@ -3,6 +3,7 @@
 #include "mnist_demo.hpp"
 #include <iostream>
 #include <omp.h>
+#include "conv_demo.hpp"
 
 int main()
 {
@@ -12,6 +13,7 @@ int main()
 	std::cout << "Neural Network Initialized!" << std::endl;
 	// run_mnist_demo();
 	// run_cifar10_demo();
+	// run_conv_demo();
 	run_conv_demo_momentum();
 	return 0;
 }

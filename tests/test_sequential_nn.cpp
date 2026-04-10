@@ -42,7 +42,7 @@ LinearLayer<Tensor<float>> make_identity_linear( std::size_t dim )
 
 TEST_CASE( "SequentialNN single layer forward output shape", "[sequential_nn][forward][shape]" )
 {
-	auto linear = LinearLayer<Tensor<float>>( 3, 5 );
+	auto linear = LinearLayer<Tensor<float>>( 5 );
 	SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>> nn( linear );
 
 	Tensor<float> input( 2, 3, 1.0f );
@@ -54,9 +54,9 @@ TEST_CASE( "SequentialNN single layer forward output shape", "[sequential_nn][fo
 
 TEST_CASE( "SequentialNN multiple layers forward output shape", "[sequential_nn][forward][shape]" )
 {
-	auto linear1 = LinearLayer<Tensor<float>>( 3, 4 );
+	auto linear1 = LinearLayer<Tensor<float>>( 4 );
 	auto relu = ReLULayer<Tensor<float>>();
-	auto linear2 = LinearLayer<Tensor<float>>( 4, 2 );
+	auto linear2 = LinearLayer<Tensor<float>>( 2 );
 	SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>, ReLULayer<Tensor<float>>,
 	             LinearLayer<Tensor<float>>>
 	    nn( linear1, relu, linear2 );
@@ -98,7 +98,7 @@ TEST_CASE( "SequentialNN two identity layers forward preserves input", "[sequent
 
 TEST_CASE( "SequentialNN backward gradient shape", "[sequential_nn][backward][shape]" )
 {
-	auto linear = LinearLayer<Tensor<float>>( 3, 5 );
+	auto linear = LinearLayer<Tensor<float>>( 5 );
 	SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>> nn( linear );
 
 	Tensor<float> input( 2, 3, 1.0f );
@@ -113,9 +113,9 @@ TEST_CASE( "SequentialNN backward gradient shape", "[sequential_nn][backward][sh
 
 TEST_CASE( "SequentialNN backward through multiple layers gradient shape", "[sequential_nn][backward][shape]" )
 {
-	auto linear1 = LinearLayer<Tensor<float>>( 3, 4 );
+	auto linear1 = LinearLayer<Tensor<float>>( 4 );
 	auto relu = ReLULayer<Tensor<float>>();
-	auto linear2 = LinearLayer<Tensor<float>>( 4, 2 );
+	auto linear2 = LinearLayer<Tensor<float>>( 2 );
 	SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>, ReLULayer<Tensor<float>>,
 	             LinearLayer<Tensor<float>>>
 	    nn( linear1, relu, linear2 );

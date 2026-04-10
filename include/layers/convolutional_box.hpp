@@ -5,9 +5,62 @@
 #include <cstddef>
 #include <tuple>
 #include <utility>
+#include "batch_norm_layer.hpp"
+#include "convolutional_layer.hpp"
 #include "layer_base.hpp"
+#include "max_pool_layer.hpp"
+#include "relu_layer.hpp"
 
 namespace neural {
+
+namespace detail {
+
+template < typename TensorN_t >
+std::array<std::size_t, 4> infer_shape_after( std::array<std::size_t, 4> s,
+                                              ConvolutionalLayer<TensorN_t> const &L )
+{
+	std::size_t const k   = L.kernelSize();
+	std::size_t const pad = k / 2;
+	return { s[0], L.outChannels(), s[2] - 2 * pad, s[3] - 2 * pad };
+}
+
+template < typename TensorN_t >
+std::array<std::size_t, 4> infer_shape_after( std::array<std::size_t, 4> s,
+                                              ReLULayer<TensorN_t> const & )
+{
+	return s;
+}
+
+template < typename TensorN_t >
+std::array<std::size_t, 4> infer_shape_after( std::array<std::size_t, 4> s,
+                                              BatchNormLayer<TensorN_t> const & )
+{
+	return s;
+}
+
+template < typename TensorN_t >
+std::array<std::size_t, 4> infer_shape_after( std::array<std::size_t, 4> s,
+                                              MaxPoolLayer<TensorN_t> const &L )
+{
+	std::size_t const oh = ( s[2] - L.poolSize() ) / L.stride() + 1;
+	std::size_t const ow = ( s[3] - L.poolSize() ) / L.stride() + 1;
+	return { s[0], s[1], oh, ow };
+}
+
+template < typename TensorN_t, typename... Layers >
+std::size_t infer_flat_from_stack( std::size_t c, std::size_t h, std::size_t w,
+                                   std::tuple<Layers...> const &layers )
+{
+	std::array<std::size_t, 4> s{ 1u, c, h, w };
+	std::apply(
+	    [&s]( auto const &...lyr ) {
+		    ( ( s = infer_shape_after<TensorN_t>( s, lyr ) ), ... );
+	    },
+	    layers );
+	return s[1] * s[2] * s[3];
+}
+
+} // namespace detail
 
 template <typename TensorN_t, typename Tensor2D_t, typename... Layers>
 class ConvolutionalBox : public LayerBase<Tensor2D_t>
@@ -19,8 +72,8 @@ class ConvolutionalBox : public LayerBase<Tensor2D_t>
 		using value_type = typename Tensor2D_t::value_type;
 	public:
 
-		ConvolutionalBox( std::size_t channels, std::size_t height, std::size_t width,
-		                  std::size_t flat_output_cols, Layers... layers );
+		/// \p channels, \p height, \p width describe the NCHW input; flattened output width is inferred from \p layers.
+		ConvolutionalBox( std::size_t channels, std::size_t height, std::size_t width, Layers... layers );
 
 		ConvolutionalBox( ConvolutionalBox const &other );
 		ConvolutionalBox( ConvolutionalBox &&other ) noexcept;
@@ -52,9 +105,9 @@ class ConvolutionalBox : public LayerBase<Tensor2D_t>
 		std::size_t m_channels;
 		std::size_t m_height;
 		std::size_t m_width;
-		std::size_t m_flat_output_cols;
 
 		std::tuple<Layers...> m_layers;
+		std::size_t m_flat_output_cols;
 
 		std::array<TensorN_t, sizeof...( Layers ) + 1> m_fwd_slots;
 		std::array<TensorN_t, sizeof...( Layers ) + 1> m_bwd_slots;
@@ -64,13 +117,12 @@ class ConvolutionalBox : public LayerBase<Tensor2D_t>
 
 template <typename TensorN_t, typename Tensor2D_t, typename... Layers>
 ConvolutionalBox<TensorN_t, Tensor2D_t, Layers...>::ConvolutionalBox(
-	std::size_t channels, std::size_t height, std::size_t width,
-	std::size_t flat_output_cols, Layers... layers )
+	std::size_t channels, std::size_t height, std::size_t width, Layers... layers )
 	: m_channels( channels )
 	, m_height( height )
 	, m_width( width )
-	, m_flat_output_cols( flat_output_cols )
 	, m_layers( std::forward<Layers>( layers )... )
+	, m_flat_output_cols( detail::infer_flat_from_stack<TensorN_t>( channels, height, width, m_layers ) )
 {
 	wire_layers();
 }

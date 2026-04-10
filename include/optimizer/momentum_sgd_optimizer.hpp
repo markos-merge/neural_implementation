@@ -172,6 +172,8 @@ class MomentumSGDOptimizer
 		/// Momentum coefficient \(\beta\) for \(v_t = \beta v_{t-1} + \nabla L\).
 		typename Tensor::value_type m_momentum =
 		    static_cast<typename Tensor::value_type>(0.9);
+		/// \(\lambda\) for \(\frac{\lambda}{2}\|W\|^2\) on **weights only** (velocity gets \(+\lambda W\); biases unchanged). Use \c 0 to disable. If training stalls or diverges, lower \(\lambda\) or \c m_learning_rate.
+		typename Tensor::value_type m_l2_regularizer = static_cast<typename Tensor::value_type>( 0 );
 		std::size_t m_batch_size = 50;
 		std::size_t m_epochs = 100;
 
@@ -188,12 +190,13 @@ class MomentumSGDOptimizer
 
 namespace detail {
 
-/// Momentum: \(v \leftarrow \beta v + g\), then \(\theta \leftarrow \theta - \eta v\)
-/// (same as \c mulNSubstractInPlace on parameters with scalar \(\eta\)).
+/// Momentum with optional L2: \(v \leftarrow \beta v + g + \lambda\theta\), then \(\theta \leftarrow \theta - \eta v\)
+/// (equivalent to task gradient \(g\) plus \(\lambda\theta\) from \(\frac{\lambda}{2}\|\theta\|^2\)).
 template <typename ParamTensor, typename Layer>
 void momentum_updateParam_impl( VelocityChunk<Layer> &chunk, Layer &layer,
                                 typename ParamTensor::value_type momentum,
-                                typename ParamTensor::value_type learning_rate )
+                                typename ParamTensor::value_type learning_rate,
+                                typename ParamTensor::value_type l2_regularizer )
 {
 	if constexpr ( HasGetWeights<Layer> ) {
 		auto &v = chunk.m_vel_weights;
@@ -202,6 +205,10 @@ void momentum_updateParam_impl( VelocityChunk<Layer> &chunk, Layer &layer,
 		v *= momentum;
 		// \(v \mathrel{+}= g\) via \(v - (-1)\cdot g\)
 		v.mulNSubstractInPlace( g, static_cast<typename std::decay_t<decltype( v )>::value_type>( -1 ) );
+		if ( l2_regularizer > static_cast<typename ParamTensor::value_type>( 0 ) ) {
+			// \(v \mathrel{+}= \lambda w\) via \(v - (-\lambda) w\)
+			v.mulNSubstractInPlace( w, -l2_regularizer );
+		}
 		w.mulNSubstractInPlace( v, learning_rate );
 	}
 
@@ -220,16 +227,18 @@ void momentum_updateParam_impl( VelocityChunk<Layer> &chunk, Layer &layer,
 template <typename ParamTensor, typename Layer>
 void momentum_updateLayer_impl( Layer &layer, VelocityChunk<Layer> &chunk,
                                 typename ParamTensor::value_type learning_rate,
-                                typename ParamTensor::value_type momentum )
+                                typename ParamTensor::value_type momentum,
+                                typename ParamTensor::value_type l2_regularizer )
 {
 	if constexpr ( has_tensor_tuple_v<std::decay_t<Layer>> ) {
 		layer.forEachLayerZip( chunk.m_inner, [&]( auto &sub, auto &sub_chunk ) {
 			using Sub = std::decay_t<decltype( sub )>;
 			momentum_updateLayer_impl<typename Sub::tensor_t, Sub>(
-			    sub, sub_chunk, learning_rate, momentum );
+			    sub, sub_chunk, learning_rate, momentum, l2_regularizer );
 		} );
 	} else if constexpr ( UpdateableLayer<std::decay_t<Layer>, ParamTensor> ) {
-		momentum_updateParam_impl<ParamTensor, Layer>( chunk, layer, momentum, learning_rate );
+		momentum_updateParam_impl<ParamTensor, Layer>( chunk, layer, momentum, learning_rate,
+		                                               l2_regularizer );
 	}
 }
 
@@ -281,7 +290,7 @@ void MomentumSGDOptimizer<Tensor, NN>::applyStep()
 {
 	m_nn.forEachLayerZip( m_velocity, [this]( auto &layer, auto &chunk ) {
 		detail::momentum_updateLayer_impl<Tensor>( layer, chunk, this->m_learning_rate,
-		                                           this->m_momentum );
+		                                           this->m_momentum, this->m_l2_regularizer );
 	} );
 }
 
@@ -325,7 +334,6 @@ void MomentumSGDOptimizer<Tensor_t, NN>::train( std::vector< Tensor_t > &inputs,
                                                 std::vector< Tensor_t > &targets,
                                                 typename MomentumSGDOptimizer<Tensor_t, NN>::ProgressCallback callback )
 {
-	initialize();
 	// Only full batches so buffer shapes stay fixed (remainder samples are skipped each epoch).
 	std::size_t const total_batches = inputs.size() / m_batch_size;
 	if ( total_batches == 0 ) {
@@ -338,6 +346,8 @@ void MomentumSGDOptimizer<Tensor_t, NN>::train( std::vector< Tensor_t > &inputs,
 
 	detail::momentum_copy_batch_to_tensor_block( inputs_tensor, inputs );
 	detail::momentum_copy_batch_to_tensor_block( targets_tensor, targets );
+
+	bool momentum_initialized = false;
 
 	for( std::size_t epoch = 0; epoch < this->m_epochs; ++epoch ) {
 		bool stop_training = false;
@@ -359,6 +369,11 @@ void MomentumSGDOptimizer<Tensor_t, NN>::train( std::vector< Tensor_t > &inputs,
 			                                              m_batch_size );
 			m_nn.targetBuffer().assignTensorBlock( targets_tensor, batch_indices_int, i, m_batch_size );
 			loss = m_nn.trainStep();
+
+			if ( !momentum_initialized ) {
+				initMomentumState();
+				momentum_initialized = true;
+			}
 
 			applyStep();
 

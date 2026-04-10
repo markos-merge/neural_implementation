@@ -16,6 +16,9 @@ class MaxPoolLayer : public LayerBase<TensorN_t>
 	public:
 		MaxPoolLayer( std::size_t pool_size, std::size_t stride );
 
+		std::size_t poolSize() const { return m_pool_size; }
+		std::size_t stride() const { return m_stride; }
+
 		TensorN_t *forward();
 		TensorN_t *backward();
 

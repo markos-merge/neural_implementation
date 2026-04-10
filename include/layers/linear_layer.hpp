@@ -2,6 +2,8 @@
 #define LINEAR_LAYER_HPP
 #include "layer_base.hpp"
 #include "tensor_like.hpp"
+#include <cstddef>
+#include <stdexcept>
 
 namespace neural {
 
@@ -15,10 +17,13 @@ class LinearLayer : public LayerBase<Tensor>
 		using bias_t = Tensor;
 
 	public:
-		LinearLayer( std::size_t in_features, std::size_t out_features );
+		/// Only output width is fixed; input width is taken from the input tensor on first forward.
+		explicit LinearLayer( std::size_t out_features );
 		LinearLayer( Tensor const &weights, Tensor const &bias );
 
 		void initialize();
+
+		std::size_t outFeatures() const;
 
 		Tensor *forward();
 		Tensor *backward();
@@ -31,6 +36,9 @@ class LinearLayer : public LayerBase<Tensor>
 		Tensor const &getBias() const;
 
 	private:
+		void ensure_weights( std::size_t in_features );
+
+		std::size_t m_out_features;
 		Tensor m_weights;
 		Tensor m_bias;
 
@@ -38,37 +46,65 @@ class LinearLayer : public LayerBase<Tensor>
 		Tensor m_grad_bias;
 };
 
-template <typename Tensor >
-LinearLayer<Tensor>::LinearLayer( std::size_t in_features, std::size_t out_features )
-	: m_weights( in_features, out_features )
-	, m_bias( Tensor( out_features, 1, static_cast<typename Tensor::value_type>(0.) ) )
-	, m_grad_weights( in_features, out_features )
-	, m_grad_bias( out_features, 1 )
+template < typename Tensor >
+LinearLayer<Tensor>::LinearLayer( std::size_t out_features )
+	: m_out_features( out_features )
 {
-	initialize();
 }
 
-template <typename Tensor >
+template < typename Tensor >
 LinearLayer<Tensor>::LinearLayer( Tensor const &weights, Tensor const &bias )
-	: m_weights( weights )
+	: m_out_features( weights.cols() )
+	, m_weights( weights )
 	, m_bias( bias )
 	, m_grad_weights( weights.rows(), weights.cols() )
 	, m_grad_bias( bias.rows(), 1 )
 {
 }
 
-template <typename Tensor >
+template < typename Tensor >
+std::size_t LinearLayer<Tensor>::outFeatures() const
+{
+	if ( m_weights.cols() > 0 ) {
+		return m_weights.cols();
+	}
+	return m_out_features;
+}
+
+template < typename Tensor >
+void LinearLayer<Tensor>::ensure_weights( std::size_t in_features )
+{
+	if ( m_weights.rows() > 0 ) {
+		if ( m_weights.rows() != in_features ) {
+			throw std::logic_error(
+			    "LinearLayer: input width does not match allocated weight rows" );
+		}
+		return;
+	}
+	m_weights          = Tensor( in_features, m_out_features );
+	m_grad_weights     = Tensor( in_features, m_out_features );
+	m_bias             = Tensor( m_out_features, 1,
+	                             static_cast<typename Tensor::value_type>( 0. ) );
+	m_grad_bias        = Tensor( m_out_features, 1 );
+	m_weights.randomizeHe( in_features );
+}
+
+template < typename Tensor >
 Tensor *LinearLayer<Tensor>::forward()
 {
+	ensure_weights( this->getInput()->cols() );
 	this->getOutput()->matmulInPlace( *this->getInput(), m_weights );
 	this->getOutput()->addColwiseInPlace( m_bias );
 
 	return this->getOutput();
 }
 
-template <typename Tensor >
+template < typename Tensor >
 Tensor *LinearLayer<Tensor>::backward()
 {
+	if ( m_weights.rows() == 0 ) {
+		throw std::logic_error( "LinearLayer::backward: forward has not been run" );
+	}
 	Tensor const &grad = *this->getGradInput();
 	m_grad_weights.matmulInPlace( *this->getInput(), grad, true );
 	m_grad_bias.sumAlongAxisInPlace( grad, 0, true );
@@ -77,47 +113,50 @@ Tensor *LinearLayer<Tensor>::backward()
 	return this->getGradOutput();
 }
 
-template <typename Tensor >
+template < typename Tensor >
 Tensor const &LinearLayer<Tensor>::getGradWeights() const
 {
 	return m_grad_weights;
 }
 
-template <typename Tensor>
+template < typename Tensor>
 Tensor const &LinearLayer<Tensor>::getGradBias() const
 {
 	return m_grad_bias;
 }
 
-template <typename Tensor>
+template < typename Tensor>
 Tensor &LinearLayer<Tensor>::getWeights()
 {
 	return m_weights;
 }
 
-template <typename Tensor>
+template < typename Tensor>
 Tensor &LinearLayer<Tensor>::getBias()
 {
 	return m_bias;
 }
 
-template <typename Tensor>
+template < typename Tensor>
 Tensor const &LinearLayer<Tensor>::getWeights() const
 {
 	return m_weights;
 }
 
-template <typename Tensor>
+template < typename Tensor>
 Tensor const &LinearLayer<Tensor>::getBias() const
 {
 	return m_bias;
 }
 
-template <typename Tensor>
+template < typename Tensor>
 void LinearLayer<Tensor>::initialize()
 {
+	if ( m_weights.rows() == 0 ) {
+		return;
+	}
 	m_weights.randomizeHe( m_weights.rows() );
-	m_bias = Tensor( m_weights.cols(), 1, static_cast<typename Tensor::value_type>(0.) );
+	m_bias.assign( static_cast<typename Tensor::value_type>( 0. ) );
 }
 
 } // namespace neural

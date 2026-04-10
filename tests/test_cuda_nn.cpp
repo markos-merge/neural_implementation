@@ -54,7 +54,7 @@ TEST_CASE( "LinearLayer CudaTensor forward output shape", "[cuda][linear_layer][
 	if ( !neural::cuda_runtime_ready() ) {
 		SKIP( "No CUDA device available" );
 	}
-	LinearLayer<CudaTensor<float>> layer( 3, 5 );
+	LinearLayer<CudaTensor<float>> layer( 5 );
 	CudaTensor<float> in_buf( 2, 3, 1.0f );
 	CudaTensor<float> out_buf( 2, 5 );
 	CudaTensor<float> g_out( 2, 5 );
@@ -135,7 +135,7 @@ TEST_CASE( "LinearLayer CudaTensor backward gradient shapes", "[cuda][linear_lay
 	if ( !neural::cuda_runtime_ready() ) {
 		SKIP( "No CUDA device available" );
 	}
-	LinearLayer<CudaTensor<float>> layer( 3, 5 );
+	LinearLayer<CudaTensor<float>> layer( 5 );
 	CudaTensor<float> in_buf( 2, 3, 1.0f );
 	CudaTensor<float> out_buf( 2, 5 );
 	CudaTensor<float> g_out( 2, 5, 1.0f );
@@ -198,7 +198,7 @@ TEST_CASE( "SGDOptimizer CudaTensor train runs", "[cuda][sgd_optimizer]" )
 	}
 	using SimpleNN =
 	    SequentialNN<CudaTensor<float>, MSELoss<CudaTensor<float>>, LinearLayer<CudaTensor<float>>>;
-	auto linear = LinearLayer<CudaTensor<float>>( 2, 1 );
+	auto linear = LinearLayer<CudaTensor<float>>( 1 );
 	SimpleNN nn( linear );
 	SGDOptimizer<CudaTensor<float>, SimpleNN> opt( nn );
 
@@ -220,7 +220,7 @@ TEST_CASE( "SGDOptimizer CudaTensor assignTensorAsRow batching", "[cuda][sgd_opt
 	}
 	using SimpleNN =
 	    SequentialNN<CudaTensor<float>, MSELoss<CudaTensor<float>>, LinearLayer<CudaTensor<float>>>;
-	auto linear = LinearLayer<CudaTensor<float>>( 2, 1 );
+	auto linear = LinearLayer<CudaTensor<float>>( 1 );
 	SimpleNN nn( linear );
 
 	std::vector<CudaTensor<float>> inputs;

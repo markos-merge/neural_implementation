@@ -98,11 +98,11 @@ void run_mnist_demo()
 		std::cout << ", " << test_data.count << " test samples";
 	std::cout << ".\n";
 
-	auto linear1 = neural::LinearLayer<Tensor_t>( 784, 128 );
+	auto linear1 = neural::LinearLayer<Tensor_t>( 128 );
 	auto relu1 = neural::ReLULayer<Tensor_t>();
-	auto linear2 = neural::LinearLayer<Tensor_t>( 128, 64 );
+	auto linear2 = neural::LinearLayer<Tensor_t>( 64 );
 	auto relu2 = neural::ReLULayer<Tensor_t>();
-	auto linear3 = neural::LinearLayer<Tensor_t>( 64, 10 );
+	auto linear3 = neural::LinearLayer<Tensor_t>( 10 );
 
 	NN nn( linear1, relu1, linear2, relu2, linear3 );
 

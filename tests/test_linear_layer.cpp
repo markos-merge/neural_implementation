@@ -22,7 +22,7 @@ constexpr float eps = 1e-5f;
 
 TEST_CASE( "LinearLayer forward output shape", "[linear_layer][forward][shape]" )
 {
-	LinearLayer<Tensor<float>> layer( 3, 5 );
+	LinearLayer<Tensor<float>> layer( 5 );
 
 	Tensor<float> in_buf( 2, 3 );
 	Tensor<float> out_buf( 2, 5 );
@@ -61,7 +61,7 @@ TEST_CASE( "LinearLayer forward with known weights", "[linear_layer][forward][nu
 
 TEST_CASE( "LinearLayer backward gradient shapes", "[linear_layer][backward][shape]" )
 {
-	LinearLayer<Tensor<float>> layer( 3, 5 );
+	LinearLayer<Tensor<float>> layer( 5 );
 
 	Tensor<float> in_buf( 2, 3, 1.0f );
 	Tensor<float> out_buf( 2, 5 );
