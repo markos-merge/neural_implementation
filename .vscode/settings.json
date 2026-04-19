@@ -1,4 +1,6 @@
 {
+	"cmake.copyCompileCommands": "${workspaceFolder}/compile_commands.json",
+	"C_Cpp.intelliSenseEngine": "disabled",
 	"cmake.useCMakePresets": "always",
 	"cmake.configurePreset": "release",
 	"cmake.buildPreset": "release",

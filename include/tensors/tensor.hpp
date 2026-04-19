@@ -4,6 +4,7 @@
 #include <Eigen/Dense>
 #include <cmath>
 #include <iterator>
+#include <memory>
 #include <random>
 #include <stdexcept>
 #include <vector>
@@ -98,6 +99,8 @@ class Tensor
 		Tensor &sumAlongAxisInPlace( Tensor const &src, std::size_t axis, bool transpose_out = false );
 
 		Tensor max_along_axis( std::size_t axis ) const;
+
+		Tensor<Eigen::Index> argmaxAlongAxis( std::size_t axis ) const;
 
 		template <typename Generator>
 		void randomize( Generator &generator ) noexcept;
@@ -250,12 +253,22 @@ void Tensor<T>::assignTensorAsRow( std::size_t row, Tensor const &other )
 	if ( row >= static_cast<std::size_t>( m_mat.rows() ) ) {
 		throw std::out_of_range( "Tensor::assignTensorAsRow(): row out of range" );
 	}
-	if ( other.m_mat.rows() < 1
-	     || static_cast<std::size_t>( other.m_mat.cols() ) != static_cast<std::size_t>( m_mat.cols() ) ) {
+	if ( other.m_mat.rows() < 1 ) {
 		throw std::invalid_argument(
-		    "Tensor::assignTensorAsRow(): other must have rows>=1 and same cols()" );
+		    "Tensor::assignTensorAsRow(): other must have rows>=1" );
 	}
-	m_mat.row( static_cast<Eigen::Index>( row ) ) = other.m_mat.row( 0 );
+	std::size_t const dest_cols = static_cast<std::size_t>( m_mat.cols() );
+	std::size_t const other_cols = static_cast<std::size_t>( other.m_mat.cols() );
+	if ( other_cols == dest_cols ) {
+		m_mat.row( static_cast<Eigen::Index>( row ) ) = other.m_mat.row( 0 );
+	} else if ( other.size() == dest_cols ) {
+		Eigen::Map<const Eigen::Matrix<value_type, 1, Eigen::Dynamic, Eigen::RowMajor>> const as_row(
+		    other.data(), 1, static_cast<Eigen::Index>( dest_cols ) );
+		m_mat.row( static_cast<Eigen::Index>( row ) ) = as_row;
+	} else {
+		throw std::invalid_argument(
+		    "Tensor::assignTensorAsRow(): other.cols() or other.size() must match destination cols" );
+	}
 }
 
 template < typename T >
@@ -656,6 +669,30 @@ Tensor<T> Tensor<T>::max_along_axis( std::size_t axis ) const
 }
 
 template <typename T>
+Tensor<Eigen::Index> Tensor<T>::argmaxAlongAxis( std::size_t axis ) const
+{
+	if ( axis == 0 ) {
+		Tensor<Eigen::Index> out( 1, cols() );
+		for ( std::size_t j = 0; j < cols(); ++j ) {
+			Eigen::Index idx = 0;
+			m_mat.col( static_cast<Eigen::Index>( j ) ).maxCoeff( &idx );
+			out.assign( 0, j, idx );
+		}
+		return out;
+	}
+	if ( axis == 1 ) {
+		Tensor<Eigen::Index> out( rows(), 1 );
+		for ( std::size_t i = 0; i < rows(); ++i ) {
+			Eigen::Index idx = 0;
+			m_mat.row( static_cast<Eigen::Index>( i ) ).maxCoeff( &idx );
+			out.assign( i, 0, idx );
+		}
+		return out;
+	}
+	throw std::invalid_argument( "Tensor::argmaxAlongAxis(): axis must be 0 or 1" );
+}
+
+template <typename T>
 template <typename Generator>
 void Tensor<T>::randomize( Generator &generator ) noexcept
 {
@@ -682,6 +719,60 @@ void Tensor<T>::randomizeHe( std::size_t fan_in ) noexcept
 	auto generator = [&]() { return static_cast<T>( dis( gen ) ); };
 	randomize( generator );
 }
+
+/// Callable batch policy: holds flattened input width (\c input_cols), target row width, and batch row count
+/// (use in custom \c operator() e.g. for augmentation). Default is a no-op after row gather.
+template <typename T = float>
+struct DefaultAssignBatchOp {
+	std::size_t input_cols = 0;
+	std::size_t target_cols = 0;
+	std::size_t batch_rows = 0;
+
+	constexpr DefaultAssignBatchOp() = default;
+	constexpr DefaultAssignBatchOp( std::size_t in_cols, std::size_t out_cols, std::size_t rows )
+	    : input_cols( in_cols ), target_cols( out_cols ), batch_rows( rows )
+	{
+	}
+
+	void operator()( Tensor<T> &host_x, Tensor<T> &host_y ) const
+	{
+		(void)host_x;
+		(void)host_y;
+	}
+};
+
+template <typename T, typename Op>
+inline void assignBatch(
+    Tensor<T> &input_batch,
+    Tensor<T> &target_batch,
+    std::vector<Tensor<T>> const &host_inputs,
+    std::vector<Tensor<T>> const &host_targets,
+    std::vector<int> const &batch_indices_int,
+    std::size_t batch_window_start,
+    std::size_t batch_size,
+    Tensor<T> &host_x,
+    Tensor<T> &host_y,
+    Op const &op )
+{
+	#ifdef _OPENMP
+	#pragma omp parallel for
+	#endif
+	for ( std::size_t r = 0; r < batch_size; ++r ) {
+		int const idx = batch_indices_int[static_cast<std::size_t>( batch_window_start + r )];
+		host_x.assignTensorAsRow( r, host_inputs[static_cast<std::size_t>( idx )] );
+		host_y.assignTensorAsRow( r, host_targets[static_cast<std::size_t>( idx )] );
+	}
+
+	op( host_x, host_y );
+
+	if ( std::addressof( input_batch ) != std::addressof( host_x ) ) {
+		input_batch.assign( host_x.data(), host_x.size() );
+	}
+	if ( std::addressof( target_batch ) != std::addressof( host_y ) ) {
+		target_batch.assign( host_y.data(), host_y.size() );
+	}
+}
+
 }
 
 #endif

@@ -35,6 +35,16 @@
 			}
 		},
 		{
+			"name": "debug-cuda",
+			"displayName": "Debug (CUDA)",
+			"generator": "Ninja",
+			"binaryDir": "${sourceDir}/build_debug_cuda",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "Debug",
+				"NEURAL_ENABLE_CUDA": "ON"
+			}
+		},
+		{
 			"name": "release-cuda",
 			"displayName": "Release (CUDA)",
 			"generator": "Ninja",
@@ -67,6 +77,10 @@
 		{
 			"name": "relwithdebinfo",
 			"configurePreset": "relwithdebinfo"
+		},
+		{
+			"name": "debug-cuda",
+			"configurePreset": "debug-cuda"
 		},
 		{
 			"name": "release-cuda",

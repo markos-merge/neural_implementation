@@ -5,6 +5,10 @@
 #include <array>
 #include <stdexcept>
 #include "layer_base.hpp"
+#include "tensor_n.hpp"
+#if NEURAL_CUDNN_ENABLED
+#include "cuda_tensor_n.hpp"
+#endif
 
 namespace neural {
 
@@ -115,33 +119,18 @@ TensorN_t *ConvolutionalLayer< TensorN_t >::backward()
 	if ( m_weights.size() == 0 ) {
 		throw std::logic_error( "ConvolutionalLayer::backward: forward has not been run" );
 	}
-	TensorN_t *grad_input = this->getGradInput();
-	TensorN_t *grad_output = this->getGradOutput();
-
-	auto const input_shape = this->getInput()->shape();
-	auto const w_shape = m_weights.shape();
-
-	grad_input->swapAxes( { 1, 0, 2, 3 }, m_grad_input_aux_tensor );
-
-	m_grad_input_aux_tensor.multiply( m_im2col_aux_tensor, true, m_grad_weights );
-
-	m_grad_input_aux_tensor.reduceSumToDim( 0, m_grad_bias );
-
-	auto const grad_shape = m_grad_input_aux_tensor.shape();
-	m_im2col_aux_tensor = aux_tensor_type(
-	    { grad_shape[0], grad_shape[1] * grad_shape[2] * grad_shape[3] },
-	    m_grad_input_aux_tensor.data(),
-	    m_grad_input_aux_tensor.data() + m_grad_input_aux_tensor.size() );
-
-	m_weights.swapAxes( { 1, 2, 3, 0 }, m_grad_input_aux_tensor );
-	m_grad_input_aux_tensor.reshape( { w_shape[1] * w_shape[2] * w_shape[3], w_shape[0], 1, 1 } );
-
-	TensorN_t grad_col( { w_shape[1] * w_shape[2] * w_shape[3], m_im2col_aux_tensor.shape()[1], 1, 1 } );
-	m_grad_input_aux_tensor.multiply( m_im2col_aux_tensor, false, grad_col );
-
-	grad_col.col2Im( w_shape, input_shape, *grad_output );
-
-	return grad_output;
+#if NEURAL_CUDNN_ENABLED
+	if constexpr ( is_cuda_tensor4_v<TensorN_t> ) {
+		convolutional_backward_cudnn( *this->getGradInput(), m_weights, *this->getInput(), m_grad_weights,
+		                              m_grad_bias, *this->getGradOutput() );
+	} else
+#endif
+	{
+		convolutional_backward_im2col( *this->getGradInput(), m_weights, m_im2col_aux_tensor,
+		                               this->getInput()->shape(), m_grad_weights, m_grad_bias,
+		                               *this->getGradOutput(), m_grad_input_aux_tensor );
+	}
+	return this->getGradOutput();
 }
 
 } // namespace neural

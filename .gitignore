@@ -13,6 +13,8 @@ flame.svg
 build/
 build_*/
 out/
+.clangd
+build.ninja
 
 # CMake
 CMakeCache.txt
@@ -80,3 +82,8 @@ Thumbs.db
 *.swp
 *.swo
 *.bak
+build-cuda/DartConfiguration.tcl
+build-cuda/neural_implementation
+.gitignore
+build-cuda/tests
+scripts/__pycache__/cifar10_pytorch_same_arch_as_conv_demo_cuda.cpython-314.pyc

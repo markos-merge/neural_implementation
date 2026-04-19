@@ -3,20 +3,21 @@
 
 #include "neural_cuda_kernels.hpp"
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #if NEURAL_CUDA_ENABLED
 #include <cuda_runtime.h>
 #include <driver_types.h>
+#include "cuda_mem.hpp"
 #endif
 #include <algorithm>
 #include <iterator>
 #include <random>
 #include <cmath>
-#include <chrono>
 #include <stdexcept>
-#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -29,30 +30,6 @@
 namespace neural {
 
 #if NEURAL_CUDA_ENABLED
-
-namespace detail {
-
-inline cudaError_t cuda_malloc_retry( void **dev_ptr, std::size_t size_bytes,
-                                      int max_attempts = 5 )
-{
-	// (void)cudaDeviceSynchronize();
-	for ( int attempt = 0; attempt < max_attempts; ++attempt ) {
-		if ( attempt > 0 ) {
-			std::this_thread::sleep_for( std::chrono::milliseconds( 1 * attempt ) );
-			(void)cudaDeviceSynchronize();
-		}
-		cudaError_t const err = cudaMalloc( dev_ptr, size_bytes );
-		if ( err == cudaSuccess ) {
-			return cudaSuccess;
-		}
-		if ( err != cudaErrorMemoryAllocation ) {
-			return err;
-		}
-	}
-	return cudaErrorMemoryAllocation;
-}
-
-}
 
 template <typename T>
 struct CudaTensorMatrixPlaceholder
@@ -80,6 +57,10 @@ class CudaTensor
 	public:
 		CudaTensor() noexcept = default;
 		CudaTensor( std::size_t rows, std::size_t cols );
+		explicit CudaTensor( std::array<std::size_t, 2> shape )
+			: CudaTensor( shape[0], shape[1] )
+		{
+		}
 
 		template <std::random_access_iterator It>
 		CudaTensor( std::size_t rows, std::size_t cols, It begin, It end );
@@ -94,11 +75,18 @@ class CudaTensor
 		std::size_t rows() const;
 		std::size_t cols() const;
 		std::size_t size() const;
+		std::array<std::size_t, 2> shape() const { return { m_rows, m_cols }; }
+
+		/// Device pointer; do not dereference on the host.
+		value_type       *data() noexcept       { return m_data_handle; }
+		value_type const *data() const noexcept { return m_data_handle; }
 
 		value_type operator()( std::size_t row, std::size_t col ) const;
 
 		void assign( std::size_t row, std::size_t col, value_type value );
 		void assign( value_type value );
+		/// Copies \p size elements from \p src (host or device; uses \c cudaMemcpyDefault).
+		void assign( value_type const *src, std::size_t size );
 
 		void assignTensorAsRow( std::size_t row, CudaTensor const &other );
 		void assignTensor( value_type *value, std::size_t size );
@@ -116,9 +104,10 @@ class CudaTensor
 		CudaTensor &matmulInPlace( CudaTensor const &m1, CudaTensor const &m2,
 		                           bool transpose_first = false, bool transpose_second = false );
 	
-		CudaTensor &elementwiseMultiplyInPlace( CudaTensor const &other );
+	CudaTensor &elementwiseMultiplyInPlace( CudaTensor const &other );
+	CudaTensor &mulNSubstractInPlace( CudaTensor const &other, value_type scalar );
 
-		CudaTensor divideRowsWithCol( CudaTensor const &other ) const;
+	CudaTensor divideRowsWithCol( CudaTensor const &other ) const;
 		CudaTensor &divideRowsWithColInPlace( CudaTensor const &other );
 
 		value_type maxCoeff() const;
@@ -151,6 +140,8 @@ class CudaTensor
 		                                 bool transpose_out = false );
 
 		CudaTensor max_along_axis( std::size_t axis ) const;
+
+		CudaTensor<std::uint32_t> argmaxAlongAxis( std::size_t axis ) const;
 
 		template <typename Generator>
 		void randomize( Generator &generator ) noexcept;
@@ -456,9 +447,13 @@ void CudaTensor<T>::assignTensorAsRow( std::size_t row, CudaTensor const &other 
 	if ( m_data_handle == nullptr || m_cols == 0 ) {
 		return;
 	}
-	if ( other.m_data_handle == nullptr || other.m_rows < 1 || other.m_cols != m_cols ) {
+	if ( other.m_data_handle == nullptr || other.m_rows < 1 ) {
 		throw std::invalid_argument(
-		    "CudaTensor::assignTensorAsRow(): other must have rows>=1 and same cols()" );
+		    "CudaTensor::assignTensorAsRow(): other must have rows>=1" );
+	}
+	if ( other.m_cols != m_cols && other.m_rows * other.m_cols != m_cols ) {
+		throw std::invalid_argument(
+		    "CudaTensor::assignTensorAsRow(): other.cols() or other.size() must match destination cols" );
 	}
 	cudaError_t const cuda_stat =
 	    cudaMemcpy( m_data_handle + row * m_cols, other.m_data_handle,
@@ -480,6 +475,19 @@ void CudaTensor<T>::assignTensor( value_type *value, std::size_t size )
 	                cudaMemcpyHostToDevice );
 	if ( cuda_stat != cudaSuccess ) {
 		throw std::runtime_error( "CudaTensor::assignTensor(): cudaMemcpy failed" );
+	}
+}
+
+template <typename T>
+void CudaTensor<T>::assign( value_type const *src, std::size_t size )
+{
+	if ( size != m_rows * m_cols ) {
+		throw std::out_of_range( "CudaTensor::assign(ptr): size mismatch" );
+	}
+	cudaError_t const cuda_stat =
+	    cudaMemcpy( m_data_handle, src, size * sizeof( T ), cudaMemcpyDefault );
+	if ( cuda_stat != cudaSuccess ) {
+		throw std::runtime_error( "CudaTensor::assign(ptr): cudaMemcpy failed" );
 	}
 }
 
@@ -798,6 +806,66 @@ CudaTensor<T> &CudaTensor<T>::matmulInPlace( CudaTensor const &m1, CudaTensor co
 		(void)m1;
 		(void)m2;
 		return *this;
+	}
+}
+
+template <typename T>
+CudaTensor<T> &CudaTensor<T>::elementwiseMultiplyInPlace( CudaTensor const &other )
+{
+	if ( m_rows != other.m_rows || m_cols != other.m_cols ) {
+		throw std::invalid_argument(
+		    "CudaTensor::elementwiseMultiplyInPlace(): incompatible dimensions" );
+	}
+	if ( size() == 0 ) {
+		return *this;
+	}
+	if ( m_data_handle == nullptr || other.m_data_handle == nullptr ) {
+		throw std::runtime_error( "CudaTensor::elementwiseMultiplyInPlace(): tensor not initialized" );
+	}
+	if constexpr ( std::is_same_v<T, float> ) {
+		cudaError_t const err = cuda_mul_float_inplace( m_data_handle, other.m_data_handle, size() );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error(
+			    "CudaTensor::elementwiseMultiplyInPlace(): cuda_mul_float_inplace failed" );
+		}
+		return *this;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cudaError_t const err = cuda_mul_fp8_inplace( m_data_handle, other.m_data_handle, size() );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error(
+			    "CudaTensor::elementwiseMultiplyInPlace(): cuda_mul_fp8_inplace failed" );
+		}
+		return *this;
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::elementwiseMultiplyInPlace(): unsupported type" );
+	}
+}
+
+template <typename T>
+CudaTensor<T> &CudaTensor<T>::mulNSubstractInPlace( CudaTensor const &other, value_type scalar )
+{
+	if ( m_data_handle == nullptr || other.m_data_handle == nullptr ) {
+		throw std::runtime_error( "CudaTensor::mulNSubstractInPlace(): tensor not initialized" );
+	}
+	if ( size() != other.size() ) {
+		throw std::invalid_argument( "CudaTensor::mulNSubstractInPlace(): incompatible sizes" );
+	}
+	if ( size() == 0 ) {
+		return *this;
+	}
+	if constexpr ( std::is_same_v<T, float> ) {
+		cudaError_t const err =
+		    cuda_mul_substract_float( m_data_handle, other.m_data_handle, size(),
+		                              static_cast<float>( scalar ) );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error(
+			    "CudaTensor::mulNSubstractInPlace(): cuda_mul_substract_float failed" );
+		}
+		return *this;
+	} else {
+		throw std::invalid_argument( "CudaTensor::mulNSubstractInPlace(): unsupported type" );
 	}
 }
 
@@ -1704,6 +1772,59 @@ CudaTensor<T> CudaTensor<T>::max_along_axis( std::size_t axis ) const
 }
 
 template <typename T>
+CudaTensor<std::uint32_t> CudaTensor<T>::argmaxAlongAxis( std::size_t axis ) const
+{
+	if ( axis != 0 && axis != 1 ) {
+		throw std::invalid_argument( "CudaTensor::argmaxAlongAxis(): axis must be 0 or 1" );
+	}
+	if ( size() == 0 || m_data_handle == nullptr ) {
+		return CudaTensor<std::uint32_t>{};
+	}
+	if ( axis == 0 ) {
+		CudaTensor<std::uint32_t> out( 1u, m_cols, std::uint32_t{} );
+		if constexpr ( std::is_same_v<T, float> ) {
+			cudaError_t const err = cuda_argmax_along_axis_float( m_data_handle, out.data(),
+			                                                      m_rows, m_cols, 0 );
+			if ( err != cudaSuccess ) {
+				throw std::runtime_error( "CudaTensor::argmaxAlongAxis(): cuda_argmax_along_axis_float failed" );
+			}
+			return out;
+#if NEURAL_CUDA_ENABLED
+		} else if constexpr ( std::is_same_v<T, fp8> ) {
+			cudaError_t const err = cuda_argmax_along_axis_fp8( m_data_handle, out.data(),
+			                                                    m_rows, m_cols, 0 );
+			if ( err != cudaSuccess ) {
+				throw std::runtime_error( "CudaTensor::argmaxAlongAxis(): cuda_argmax_along_axis_fp8 failed" );
+			}
+			return out;
+#endif
+		} else {
+			throw std::invalid_argument( "CudaTensor::argmaxAlongAxis(): unsupported type" );
+		}
+	}
+	CudaTensor<std::uint32_t> out( m_rows, 1u, std::uint32_t{} );
+	if constexpr ( std::is_same_v<T, float> ) {
+		cudaError_t const err =
+		    cuda_argmax_along_axis_float( m_data_handle, out.data(), m_rows, m_cols, 1 );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::argmaxAlongAxis(): cuda_argmax_along_axis_float failed" );
+		}
+		return out;
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cudaError_t const err =
+		    cuda_argmax_along_axis_fp8( m_data_handle, out.data(), m_rows, m_cols, 1 );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::argmaxAlongAxis(): cuda_argmax_along_axis_fp8 failed" );
+		}
+		return out;
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::argmaxAlongAxis(): unsupported type" );
+	}
+}
+
+template <typename T>
 template <typename Generator>
 void CudaTensor<T>::randomize( Generator &generator ) noexcept
 {
@@ -1750,6 +1871,32 @@ void CudaTensor<T>::copyToHost( T *host ) const
 	if ( err != cudaSuccess ) {
 		throw std::runtime_error( "CudaTensor::copyToHost(): cudaMemcpy failed" );
 	}
+}
+
+template <typename T, typename Op>
+inline void assignBatch(
+    CudaTensor<T> &input_batch,
+    CudaTensor<T> &target_batch,
+    std::vector<Tensor<T>> const &host_inputs,
+    std::vector<Tensor<T>> const &host_targets,
+    std::vector<int> const &batch_indices_int,
+    std::size_t batch_window_start,
+    std::size_t batch_size,
+    Tensor<T> &host_x,
+    Tensor<T> &host_y,
+    Op const &op )
+{
+	#ifdef _OPENMP
+	#pragma omp parallel for
+	#endif
+	for ( std::size_t r = 0; r < batch_size; ++r ) {
+		int const idx = batch_indices_int[static_cast<std::size_t>( batch_window_start + r )];
+		host_x.assignTensorAsRow( r, host_inputs[static_cast<std::size_t>( idx )] );
+		host_y.assignTensorAsRow( r, host_targets[static_cast<std::size_t>( idx )] );
+	}
+	op( host_x, host_y );
+	input_batch.assign( host_x.data(), host_x.size() );
+	target_batch.assign( host_y.data(), host_y.size() );
 }
 
 

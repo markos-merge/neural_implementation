@@ -13,3 +13,7 @@
 - **Recht, B.** (course notes). [Optimization for Modern Machine Learning — Momentum](https://people.eecs.berkeley.edu/~brecht/opt4ml_book/O4MD_04_Momentum.pdf) (PDF). Berkeley — continuous-time / heavy-ball intuition and discrete updates.
 
 Related (unified views): e.g. [Nesterov’s Accelerated Gradient and Momentum as approximations to Regularised Update Descent](https://arxiv.org/abs/1607.01981) (arXiv:1607.01981).
+
+## Data augmentation
+
+- [A practical guide to data augmentation in PyTorch (with examples and visualizations)](https://medium.com/@BurtMcGurt/a-practical-guide-to-data-augmentation-in-pytorch-with-examples-and-visualizations-761ad5c2a903) — Medium (BurtMcGurt).

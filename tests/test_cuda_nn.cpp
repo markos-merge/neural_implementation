@@ -202,11 +202,11 @@ TEST_CASE( "SGDOptimizer CudaTensor train runs", "[cuda][sgd_optimizer]" )
 	SimpleNN nn( linear );
 	SGDOptimizer<CudaTensor<float>, SimpleNN> opt( nn );
 
-	std::vector<CudaTensor<float>> inputs;
-	std::vector<CudaTensor<float>> targets;
+	std::vector<Tensor<float>> inputs;
+	std::vector<Tensor<float>> targets;
 	for ( int i = 0; i < 4; ++i ) {
-		inputs.push_back( CudaTensor<float>( 1, 2, static_cast<float>( i ) / 4.f ) );
-		targets.push_back( CudaTensor<float>( 1, 1, static_cast<float>( i ) / 8.f ) );
+		inputs.push_back( Tensor<float>( 1, 2, static_cast<float>( i ) / 4.f ) );
+		targets.push_back( Tensor<float>( 1, 1, static_cast<float>( i ) / 8.f ) );
 	}
 	opt.m_epochs = 2;
 	opt.m_batch_size = 2;

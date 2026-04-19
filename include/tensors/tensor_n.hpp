@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cmath>
 #include <limits>
 #include <vector>
 #include <iterator>
@@ -583,6 +584,208 @@ void TensorN<rank, T>::im2ColConvolution(
 	gemm_cnhw_layout.swapAxes( { 1, 0, 2, 3 }, output );
 }
 
+/// NCHW batch-norm forward.
+template <typename T>
+void batch_norm_forward_nchw( TensorN<4, T> const &input, TensorN<4, T> const &gamma,
+                              TensorN<4, T> const &beta, TensorN<4, T> &running_mean,
+                              TensorN<4, T> &running_var, TensorN<4, T> &last_running_mean,
+                              TensorN<4, T> &last_running_var, T eps, T momentum, bool training,
+                              bool is_first_forward, TensorN<4, T> &output )
+{
+	std::array<std::size_t, 4> const in_shape = input.shape();
+	std::size_t const C = in_shape[1];
+	auto const is_channel_param_shape = [C]( std::array<std::size_t, 4> const &shape ) {
+		return shape[0] == 1 && shape[2] == 1 && shape[3] == 1 && shape[1] == C;
+	};
+
+	if ( !is_channel_param_shape( gamma.shape() ) || !is_channel_param_shape( beta.shape() ) ||
+	     !is_channel_param_shape( running_mean.shape() ) ||
+	     !is_channel_param_shape( running_var.shape() ) ||
+	     !is_channel_param_shape( last_running_mean.shape() ) ||
+	     !is_channel_param_shape( last_running_var.shape() ) ) {
+		throw std::invalid_argument(
+		    "batchNormForward: expected {1, C, 1, 1} for gamma/beta/running tensors with C == input channels" );
+	}
+	if ( output.shape() != in_shape ) {
+		throw std::invalid_argument( "batchNormForward: output shape must match input shape" );
+	}
+
+	std::size_t const N = in_shape[0];
+	std::size_t const H = in_shape[2];
+	std::size_t const W = in_shape[3];
+	std::size_t const M = N * H * W;
+	std::array<std::size_t, 4> const in_strides = input.strides();
+
+	T *const running_mean_data = running_mean.data();
+	T *const running_var_data = running_var.data();
+	T *const last_running_mean_data = last_running_mean.data();
+	T *const last_running_var_data = last_running_var.data();
+
+	if ( training || is_first_forward ) {
+#ifdef _OPENMP
+#pragma omp parallel for schedule( static )
+#endif
+		for ( std::size_t c = 0; c < C; ++c ) {
+			T channel_sum = static_cast<T>( 0 );
+			for ( std::size_t n = 0; n < N; ++n ) {
+				for ( std::size_t h = 0; h < H; ++h ) {
+					for ( std::size_t w = 0; w < W; ++w ) {
+						channel_sum += input.at( n, c, h, w );
+					}
+				}
+			}
+			running_mean_data[c] = channel_sum / static_cast<T>( M );
+		}
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule( static )
+#endif
+		for ( std::size_t c = 0; c < C; ++c ) {
+			T var_sum = static_cast<T>( 0 );
+			T const mean_c = running_mean_data[c];
+			for ( std::size_t n = 0; n < N; ++n ) {
+				for ( std::size_t h = 0; h < H; ++h ) {
+					for ( std::size_t w = 0; w < W; ++w ) {
+						T const centered = input.at( n, c, h, w ) - mean_c;
+						var_sum += centered * centered;
+					}
+				}
+			}
+			running_var_data[c] = var_sum / static_cast<T>( M );
+		}
+	} else {
+		std::copy( last_running_mean_data, last_running_mean_data + C, running_mean_data );
+		std::copy( last_running_var_data, last_running_var_data + C, running_var_data );
+	}
+
+	T const *const gamma_data = gamma.data();
+	T const *const beta_data = beta.data();
+	T const *const input_data = input.data();
+	T *const output_data = output.data();
+
+#ifdef _OPENMP
+#pragma omp parallel for collapse( 2 ) schedule( static )
+#endif
+	for ( std::size_t n = 0; n < N; ++n ) {
+		for ( std::size_t c = 0; c < C; ++c ) {
+			T const mean_c = running_mean_data[c];
+			T const inv_std = static_cast<T>( 1 ) / std::sqrt( running_var_data[c] + eps );
+			T const gamma_c = gamma_data[c];
+			T const beta_c = beta_data[c];
+			for ( std::size_t h = 0; h < H; ++h ) {
+				for ( std::size_t w = 0; w < W; ++w ) {
+					std::size_t const idx = n * in_strides[0] + c * in_strides[1] +
+					                        h * in_strides[2] + w;
+					output_data[idx] = gamma_c * ( input_data[idx] - mean_c ) * inv_std + beta_c;
+				}
+			}
+		}
+	}
+
+	if ( is_first_forward ) {
+		std::copy( running_mean_data, running_mean_data + C, last_running_mean_data );
+		std::copy( running_var_data, running_var_data + C, last_running_var_data );
+	} else if ( training ) {
+#ifdef _OPENMP
+#pragma omp parallel for schedule( static )
+#endif
+		for ( std::size_t c = 0; c < C; ++c ) {
+			last_running_mean_data[c] = last_running_mean_data[c] * momentum +
+			                            running_mean_data[c] * ( static_cast<T>( 1 ) - momentum );
+			last_running_var_data[c] = last_running_var_data[c] * momentum +
+			                           running_var_data[c] * ( static_cast<T>( 1 ) - momentum );
+		}
+	}
+}
+
+/// NCHW batch-norm backward.
+/// \p grad_wrt_output is \f$\partial L/\partial y\f$ and \p grad_wrt_input is \f$\partial L/\partial x\f$.
+template <typename T>
+void batch_norm_backward_nchw( TensorN<4, T> const &grad_wrt_output, TensorN<4, T> const &input,
+                               TensorN<4, T> const &gamma, TensorN<4, T> const &running_mean,
+                               TensorN<4, T> const &running_var, T eps,
+                               TensorN<4, T> &grad_gamma, TensorN<4, T> &grad_beta,
+                               TensorN<4, T> &grad_wrt_input )
+{
+	std::array<std::size_t, 4> const in_shape = input.shape();
+	std::size_t const C = in_shape[1];
+	auto const is_channel_param_shape = [C]( std::array<std::size_t, 4> const &shape ) {
+		return shape[0] == 1 && shape[2] == 1 && shape[3] == 1 && shape[1] == C;
+	};
+
+	if ( grad_wrt_output.shape() != in_shape ) {
+		throw std::invalid_argument( "batch_norm_backward_nchw: grad_wrt_output shape must match input shape" );
+	}
+	if ( grad_wrt_input.shape() != in_shape ) {
+		throw std::invalid_argument( "batch_norm_backward_nchw: grad_wrt_input shape must match input shape" );
+	}
+	if ( !is_channel_param_shape( gamma.shape() ) ||
+	     !is_channel_param_shape( running_mean.shape() ) ||
+	     !is_channel_param_shape( running_var.shape() ) ||
+	     !is_channel_param_shape( grad_gamma.shape() ) ||
+	     !is_channel_param_shape( grad_beta.shape() ) ) {
+		throw std::invalid_argument(
+		    "batch_norm_backward_nchw: expected {1, C, 1, 1} for gamma/running/grad tensors with C == input channels" );
+	}
+
+	std::size_t const N = in_shape[0];
+	std::size_t const H = in_shape[2];
+	std::size_t const W = in_shape[3];
+	std::size_t const HW = H * W;
+	std::size_t const M = N * HW;
+
+	std::array<std::size_t, 4> const dy_strides = grad_wrt_output.strides();
+	std::array<std::size_t, 4> const dx_strides = grad_wrt_input.strides();
+	T const *const dy_data = grad_wrt_output.data();
+	T const *const input_data = input.data();
+	T *const dx_data = grad_wrt_input.data();
+	T const *const gamma_data = gamma.data();
+	T const *const mean_data = running_mean.data();
+	T const *const var_data = running_var.data();
+	T *const dgamma_data = grad_gamma.data();
+	T *const dbeta_data = grad_beta.data();
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule( static )
+#endif
+	for ( std::size_t c = 0; c < C; ++c ) {
+		T beta_grad = static_cast<T>( 0 );
+		T gamma_grad = static_cast<T>( 0 );
+		T const inv_std = static_cast<T>( 1 ) / std::sqrt( var_data[c] + eps );
+		T const mean_c = mean_data[c];
+
+		T sum_dy = static_cast<T>( 0 );
+		T sum_dy_xhat = static_cast<T>( 0 );
+		for ( std::size_t n = 0; n < N; ++n ) {
+			std::size_t const base = n * dy_strides[0] + c * dy_strides[1];
+			for ( std::size_t i = 0; i < HW; ++i ) {
+				std::size_t const idx = base + i;
+				T const xhat = ( input_data[idx] - mean_c ) * inv_std;
+				T const dy = dy_data[idx];
+				beta_grad += dy;
+				gamma_grad += dy * xhat;
+				sum_dy += dy;
+				sum_dy_xhat += dy * xhat;
+			}
+		}
+		dbeta_data[c] = beta_grad;
+		dgamma_data[c] = gamma_grad;
+
+		T const scale = gamma_data[c] * inv_std / static_cast<T>( M );
+		for ( std::size_t n = 0; n < N; ++n ) {
+			std::size_t const base_dy = n * dy_strides[0] + c * dy_strides[1];
+			std::size_t const base_dx = n * dx_strides[0] + c * dx_strides[1];
+			for ( std::size_t i = 0; i < HW; ++i ) {
+				std::size_t const idx_dy = base_dy + i;
+				std::size_t const idx_dx = base_dx + i;
+				T const xhat = ( input_data[idx_dy] - mean_c ) * inv_std;
+				dx_data[idx_dx] = scale * ( static_cast<T>( M ) * dy_data[idx_dy] - sum_dy -
+				                            xhat * sum_dy_xhat );
+			}
+		}
+	}
+}
+
 template< std::size_t rank, typename T >
 void TensorN< rank, T >::randomizeHe( std::size_t fan_in )
 {
@@ -834,6 +1037,111 @@ TensorN<rank, T> &TensorN<rank, T>::mulNSubstractInPlace( TensorN const &other, 
 	}
 
 	return *this;
+}
+
+/// NCHW conv backward for the im2col + GEMM forward path (matches \c im2ColConvolution on CPU).
+///
+/// \param grad_wrt_output_nchw  \(\partial L / \partial y\). \c LayerBase::getGradInput().
+///        Non-const because \c swapAxes is not \c const (data is only read).
+/// \param weights \(W\) \code {C_out, C_in, K_h, K_w} \endcode (only read).
+/// \param im2col_from_forward  Column matrix from forward \c im2ColConvolution.
+/// \param input_shape_nchw     \code {N, C_in, H, W} \endcode.
+/// \param grad_weights         \(\partial L / \partial W\) (overwritten).
+/// \param grad_bias_rank4      \(\partial L / \partial b\), shape \code {1, C_out, 1, 1} \endcode.
+/// \param grad_wrt_input_nchw  \(\partial L / \partial x\). \c LayerBase::getGradOutput().
+/// \param workspace_cnhw       Scratch 4D tensor (reused and reshaped).
+template <typename T>
+void convolutional_backward_im2col( TensorN<4, T> &grad_wrt_output_nchw, TensorN<4, T> &weights,
+                                    TensorN<2, T> const &im2col_from_forward,
+                                    std::array<std::size_t, 4> input_shape_nchw, TensorN<4, T> &grad_weights,
+                                    TensorN<4, T> &grad_bias_rank4, TensorN<4, T> &grad_wrt_input_nchw,
+                                    TensorN<4, T> &workspace_cnhw )
+{
+	std::array<std::size_t, 4> const w_shape = weights.shape();
+
+	grad_wrt_output_nchw.swapAxes( { 1, 0, 2, 3 }, workspace_cnhw );
+
+	workspace_cnhw.multiply( im2col_from_forward, true, grad_weights );
+
+	workspace_cnhw.reduceSumToDim( 0, grad_bias_rank4 );
+
+	std::array<std::size_t, 4> const grad_shape = workspace_cnhw.shape();
+	TensorN<2, T> const im2col_dy_flat(
+	    { grad_shape[0], grad_shape[1] * grad_shape[2] * grad_shape[3] }, workspace_cnhw.data(),
+	    workspace_cnhw.data() + workspace_cnhw.size() );
+
+	weights.swapAxes( { 1, 2, 3, 0 }, workspace_cnhw );
+
+	workspace_cnhw.reshape(
+	    { w_shape[1] * w_shape[2] * w_shape[3], w_shape[0], 1, 1 } );
+
+	TensorN<4, T> grad_col(
+	    { w_shape[1] * w_shape[2] * w_shape[3], im2col_from_forward.shape()[1], 1, 1 } );
+	workspace_cnhw.multiply( im2col_dy_flat, false, grad_col );
+
+	grad_col.col2Im( w_shape, input_shape_nchw, grad_wrt_input_nchw );
+}
+
+/// NCHW max-pool forward (valid pooling, no padding). \p output and \p argmax must already have shape
+/// \code {N, C, H_out, W_out} \endcode with \f$H_{out} = (H - pool\_size)/stride + 1\f$ (same for W).
+template <typename T>
+void max_pool_forward_nchw( TensorN<4, T> const &input, TensorN<4, std::size_t> &argmax,
+                            TensorN<4, T> &output, std::size_t pool_size, std::size_t stride )
+{
+	std::array<std::size_t, 4> const in_shape    = input.shape();
+	std::array<std::size_t, 4> const output_shape = output.shape();
+#ifdef _OPENMP
+#pragma omp parallel for schedule( static )
+#endif
+	for ( std::size_t b = 0; b < in_shape[0]; ++b ) {
+		for ( std::size_t c = 0; c < in_shape[1]; ++c ) {
+			for ( std::size_t oh = 0; oh < output_shape[2]; ++oh ) {
+				for ( std::size_t ow = 0; ow < output_shape[3]; ++ow ) {
+					std::size_t const h_start = oh * stride;
+					std::size_t const w_start = ow * stride;
+					T max = std::numeric_limits<T>::lowest();
+					for ( std::size_t k = 0; k < pool_size; ++k ) {
+						for ( std::size_t l = 0; l < pool_size; ++l ) {
+							if ( input.at( b, c, h_start + k, w_start + l ) > max ) {
+								max                           = input.at( b, c, h_start + k, w_start + l );
+								argmax.at( b, c, oh, ow ) = k * pool_size + l;
+							}
+						}
+					}
+					output.at( b, c, oh, ow ) = max;
+				}
+			}
+		}
+	}
+}
+
+/// NCHW max-pool backward. \p grad_wrt_pooled is \f$\partial L/\partial y\f$ (\c LayerBase::getGradInput());
+/// \p grad_wrt_input is \f$\partial L/\partial x\f$ (\c getGradOutput()), pre-sized to \p input shape and zeroed here.
+template <typename T>
+void max_pool_backward_nchw( TensorN<4, T> const &grad_wrt_pooled, TensorN<4, std::size_t> const &argmax,
+                             TensorN<4, T> &grad_wrt_input, std::size_t pool_size, std::size_t stride )
+{
+	std::array<std::size_t, 4> const pooled_shape = grad_wrt_pooled.shape();
+	T *const out_data = grad_wrt_input.data();
+	std::fill( out_data, out_data + grad_wrt_input.size(), static_cast<T>( 0 ) );
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule( static )
+#endif
+	for ( std::size_t b = 0; b < pooled_shape[0]; ++b ) {
+		for ( std::size_t c = 0; c < pooled_shape[1]; ++c ) {
+			for ( std::size_t oh = 0; oh < pooled_shape[2]; ++oh ) {
+				for ( std::size_t ow = 0; ow < pooled_shape[3]; ++ow ) {
+					std::size_t const h_start = oh * stride;
+					std::size_t const w_start = ow * stride;
+					std::size_t const k = argmax.at( b, c, oh, ow ) / pool_size;
+					std::size_t const l       = argmax.at( b, c, oh, ow ) % pool_size;
+					T const val               = grad_wrt_pooled.at( b, c, oh, ow );
+					grad_wrt_input.addElementwise( { b, c, h_start + k, w_start + l }, val );
+				}
+			}
+		}
+	}
 }
 
 } // namespace neural

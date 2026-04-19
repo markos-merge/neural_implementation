@@ -6,6 +6,7 @@
 #include <cuda_fp8.h>
 #include <algorithm>
 #include <cmath>
+#include <device_types.h>
 
 namespace neural {
 
@@ -177,11 +178,32 @@ __global__ void mul_float_kernel( float const *a, float const *b, float *out, un
 
 __global__ void mul_float_inplace_kernel( float *a, float const *b, unsigned long long n )
 {
-	unsigned long long const idx = static_cast<unsigned long long>( blockIdx.x ) * blockDim.x
-	                             + threadIdx.x;
+	unsigned long long const idx = static_cast<unsigned long long>( blockIdx.x ) * blockDim.x + threadIdx.x;
 	unsigned long long const stride = static_cast<unsigned long long>( blockDim.x ) * gridDim.x;
 	for ( unsigned long long i = idx; i < n; i += stride ) {
 		a[i] *= b[i];
+	}
+}
+
+__global__ void bn_running_var_from_saved_inv_std_kernel( float *running_var, float const *saved_inv_std,
+                                                          unsigned long long channels, float eps )
+{
+	unsigned long long const idx = static_cast<unsigned long long>( blockIdx.x ) * blockDim.x + threadIdx.x;
+	unsigned long long const stride = static_cast<unsigned long long>( blockDim.x ) * gridDim.x;
+	for ( unsigned long long i = idx; i < channels; i += stride ) {
+		float const inv = saved_inv_std[i];
+		running_var[i] = 1.f / ( inv * inv ) - eps;
+	}
+}
+
+__global__ void bn_saved_inv_std_from_variance_kernel( float *saved_inv, float const *var,
+                                                     unsigned long long channels, float eps )
+{
+	unsigned long long const idx = static_cast<unsigned long long>( blockIdx.x ) * blockDim.x
+	                             + threadIdx.x;
+	unsigned long long const stride = static_cast<unsigned long long>( blockDim.x ) * gridDim.x;
+	for ( unsigned long long i = idx; i < channels; i += stride ) {
+		saved_inv[i] = rsqrtf( var[i] + eps );
 	}
 }
 
@@ -461,6 +483,81 @@ __global__ void max_axis1_fp8_kernel( fp8 const *in, fp8 *out, unsigned long lon
 			m = fmaxf( m, static_cast<float>( static_cast<__half>( in[r * cols + c] ) ) );
 		}
 		out[r] = static_cast<fp8>( static_cast<__half>( m ) );
+	}
+}
+
+__global__ void argmax_axis0_float_kernel( float const *in, unsigned int *out, unsigned long long rows,
+                                           unsigned long long cols )
+{
+	unsigned long long const c = static_cast<unsigned long long>( blockIdx.x ) * blockDim.x
+	                           + threadIdx.x;
+	if ( c < cols ) {
+		float m = in[c];
+		unsigned int best = 0;
+		for ( unsigned long long r = 1; r < rows; ++r ) {
+			float const v = in[r * cols + c];
+			if ( v > m ) {
+				m = v;
+				best = static_cast<unsigned int>( r );
+			}
+		}
+		out[c] = best;
+	}
+}
+
+__global__ void argmax_axis1_float_kernel( float const *in, unsigned int *out, unsigned long long rows,
+                                          unsigned long long cols )
+{
+	unsigned long long const r = static_cast<unsigned long long>( blockIdx.x ) * blockDim.x
+	                           + threadIdx.x;
+	if ( r < rows ) {
+		float m = in[r * cols];
+		unsigned int best = 0;
+		for ( unsigned long long c = 1; c < cols; ++c ) {
+			float const v = in[r * cols + c];
+			if ( v > m ) {
+				m = v;
+				best = static_cast<unsigned int>( c );
+			}
+		}
+		out[r] = best;
+	}
+}
+
+__global__ void argmax_axis0_fp8_kernel( fp8 const *in, unsigned int *out, unsigned long long rows,
+                                        unsigned long long cols )
+{
+	unsigned long long const c = static_cast<unsigned long long>( blockIdx.x ) * blockDim.x + threadIdx.x;
+	if ( c < cols ) {
+		float m = static_cast<float>( static_cast<__half>( in[c] ) );
+		unsigned int best = 0;
+		for ( unsigned long long r = 1; r < rows; ++r ) {
+			float const v = static_cast<float>( static_cast<__half>( in[r * cols + c] ) );
+			if ( v > m ) {
+				m = v;
+				best = static_cast<unsigned int>( r );
+			}
+		}
+		out[c] = best;
+	}
+}
+
+__global__ void argmax_axis1_fp8_kernel( fp8 const *in, unsigned int *out, unsigned long long rows,
+                                        unsigned long long cols )
+{
+	unsigned long long const r = static_cast<unsigned long long>( blockIdx.x ) * blockDim.x
+	                           + threadIdx.x;
+	if ( r < rows ) {
+		float m = static_cast<float>( static_cast<__half>( in[r * cols] ) );
+		unsigned int best = 0;
+		for ( unsigned long long c = 1; c < cols; ++c ) {
+			float const v = static_cast<float>( static_cast<__half>( in[r * cols + c] ) );
+			if ( v > m ) {
+				m = v;
+				best = static_cast<unsigned int>( c );
+			}
+		}
+		out[r] = best;
 	}
 }
 } // namespace
@@ -900,6 +997,48 @@ cudaError_t cuda_add_rowwise_fp8( fp8 *dev, fp8 const *row_vec, std::size_t rows
 	    dev, row_vec, static_cast<unsigned long long>( rows ), static_cast<unsigned long long>( cols ),
 	    alpha );
 	return cudaGetLastError();
+}
+
+cudaError_t cuda_bn_running_var_from_saved_inv_std_float( float *running_var, float const *saved_inv_std,
+                                                          std::size_t channels, float eps )
+{
+	if ( channels == 0u ) {
+		return cudaSuccess;
+	}
+	if ( running_var == nullptr || saved_inv_std == nullptr ) {
+		return cudaErrorInvalidValue;
+	}
+	int const threads = 256;
+	int const blocks = static_cast<int>( ( channels + static_cast<std::size_t>( threads ) - 1u )
+	                                   / static_cast<std::size_t>( threads ) );
+	bn_running_var_from_saved_inv_std_kernel<<<blocks, threads>>>(
+	    running_var, saved_inv_std, static_cast<unsigned long long>( channels ), eps );
+	cudaError_t const launch_err = cudaGetLastError();
+	if ( launch_err != cudaSuccess ) {
+		return launch_err;
+	}
+	return cudaSuccess;
+}
+
+cudaError_t cuda_bn_saved_inv_std_from_variance_float( float *saved_inv, float const *var,
+                                                       std::size_t channels, float eps )
+{
+	if ( channels == 0u ) {
+		return cudaSuccess;
+	}
+	if ( saved_inv == nullptr || var == nullptr ) {
+		return cudaErrorInvalidValue;
+	}
+	int const threads = 256;
+	int const blocks = static_cast<int>( ( channels + static_cast<std::size_t>( threads ) - 1u )
+	                                   / static_cast<std::size_t>( threads ) );
+	bn_saved_inv_std_from_variance_kernel<<<blocks, threads>>>(
+	    saved_inv, var, static_cast<unsigned long long>( channels ), eps );
+	cudaError_t const launch_err = cudaGetLastError();
+	if ( launch_err != cudaSuccess ) {
+		return launch_err;
+	}
+	return cudaSuccess;
 }
 
 cudaError_t cuda_mul_float( float const *a, float const *b, float *out, std::size_t count )
@@ -1435,6 +1574,359 @@ cudaError_t cuda_max_along_axis_fp8( fp8 const *in, fp8 *out, std::size_t rows, 
 	}
 	// return cudaDeviceSynchronize();
 	return cudaSuccess;
+}
+
+cudaError_t cuda_argmax_along_axis_float( float const *in, unsigned int *out, std::size_t rows,
+                                          std::size_t cols, int axis )
+{
+	if ( in == nullptr || out == nullptr ) {
+		return cudaErrorInvalidValue;
+	}
+	int const threads = 256;
+	if ( axis == 0 ) {
+		if ( cols == 0 ) {
+			return cudaSuccess;
+		}
+		int const blocks = static_cast<int>( ( cols + static_cast<std::size_t>( threads ) - 1 )
+		                                     / static_cast<std::size_t>( threads ) );
+		argmax_axis0_float_kernel<<<blocks, threads>>>( in, out, static_cast<unsigned long long>( rows ),
+		                                                static_cast<unsigned long long>( cols ) );
+	} else if ( axis == 1 ) {
+		if ( rows == 0 ) {
+			return cudaSuccess;
+		}
+		int const blocks = static_cast<int>( ( rows + static_cast<std::size_t>( threads ) - 1 )
+		                                     / static_cast<std::size_t>( threads ) );
+		argmax_axis1_float_kernel<<<blocks, threads>>>( in, out, static_cast<unsigned long long>( rows ),
+		                                                static_cast<unsigned long long>( cols ) );
+	} else {
+		return cudaErrorInvalidValue;
+	}
+	cudaError_t const launch_err = cudaGetLastError();
+	if ( launch_err != cudaSuccess ) {
+		return launch_err;
+	}
+	return cudaSuccess;
+}
+
+cudaError_t cuda_argmax_along_axis_fp8( fp8 const *in, unsigned int *out, std::size_t rows,
+                                        std::size_t cols, int axis )
+{
+	if ( in == nullptr || out == nullptr ) {
+		return cudaErrorInvalidValue;
+	}
+	int const threads = 256;
+	if ( axis == 0 ) {
+		if ( cols == 0 ) {
+			return cudaSuccess;
+		}
+		int const blocks = static_cast<int>( ( cols + static_cast<std::size_t>( threads ) - 1 )
+		                                     / static_cast<std::size_t>( threads ) );
+		argmax_axis0_fp8_kernel<<<blocks, threads>>>( in, out, static_cast<unsigned long long>( rows ),
+		                                              static_cast<unsigned long long>( cols ) );
+	} else if ( axis == 1 ) {
+		if ( rows == 0 ) {
+			return cudaSuccess;
+		}
+		int const blocks = static_cast<int>( ( rows + static_cast<std::size_t>( threads ) - 1 )
+		                                     / static_cast<std::size_t>( threads ) );
+		argmax_axis1_fp8_kernel<<<blocks, threads>>>( in, out, static_cast<unsigned long long>( rows ),
+		                                              static_cast<unsigned long long>( cols ) );
+	} else {
+		return cudaErrorInvalidValue;
+	}
+	cudaError_t const launch_err = cudaGetLastError();
+	if ( launch_err != cudaSuccess ) {
+		return launch_err;
+	}
+	return cudaSuccess;
+}
+
+__global__ void mul_substract_float_kernel( float *data, float const *other,
+                                            unsigned long long count, float scalar )
+{
+	unsigned long long const idx    = static_cast<unsigned long long>( blockIdx.x ) * blockDim.x + threadIdx.x;
+	unsigned long long const stride = static_cast<unsigned long long>( blockDim.x ) * gridDim.x;
+	for ( unsigned long long i = idx; i < count; i += stride ) {
+		data[i] -= other[i] * scalar;
+	}
+}
+
+cudaError_t cuda_mul_substract_float( float *data, float const *other, std::size_t count,
+                                      float scalar )
+{
+	if ( data == nullptr || other == nullptr || count == 0 ) {
+		return cudaSuccess;
+	}
+	int const threads = 256;
+	int const blocks  = static_cast<int>(
+	    ( count + static_cast<std::size_t>( threads ) - 1 ) / static_cast<std::size_t>( threads ) );
+	mul_substract_float_kernel<<<blocks, threads>>>( data, other,
+	                                                  static_cast<unsigned long long>( count ),
+	                                                  scalar );
+	cudaError_t const err = cudaGetLastError();
+	return err != cudaSuccess ? err : cudaSuccess;
+}
+
+/// col2im: accumulate im2col columns back into image tensor (used in conv backward).
+/// col layout : [N, C_in, Kh, Kw, out_H, out_W]  (standard im2col column-major patch order)
+/// im  layout : [N, C_in, H, W]
+/// Valid convolution: out_H = H - Kh + 1,  out_W = W - Kw + 1
+__global__ void col2im_float_kernel( float const *col, float *im,
+                                     int N, int C_in, int H, int W, int Kh, int Kw )
+{
+	int const out_H   = H - Kh + 1;
+	int const out_W   = W - Kw + 1;
+	int const total   = N * C_in * H * W;
+	int const idx     = blockIdx.x * blockDim.x + threadIdx.x;
+	int const stride  = blockDim.x * gridDim.x;
+
+	for ( int i = idx; i < total; i += stride ) {
+		int const w_im  = i % W;
+		int const h_im  = ( i / W ) % H;
+		int const c     = ( i / ( W * H ) ) % C_in;
+		int const n     = i / ( W * H * C_in );
+
+		float val = 0.f;
+		for ( int kh = 0; kh < Kh; ++kh ) {
+			int const oh = h_im - kh;
+			if ( oh < 0 || oh >= out_H ) {
+				continue;
+			}
+			for ( int kw = 0; kw < Kw; ++kw ) {
+				int const ow = w_im - kw;
+				if ( ow < 0 || ow >= out_W ) {
+					continue;
+				}
+				// col index: [n, c, kh, kw, oh, ow]
+				int const col_idx = ( ( ( ( n * C_in + c ) * Kh + kh ) * Kw + kw ) * out_H + oh ) * out_W + ow;
+				val += col[col_idx];
+			}
+		}
+		im[i] += val;
+	}
+}
+
+__global__ void add_elementwise_float_kernel( float *in, float *out, unsigned long long n, float value )
+{
+	unsigned long long const idx = static_cast<unsigned long long>( blockIdx.x ) * blockDim.x + threadIdx.x;
+	unsigned long long const stride = static_cast<unsigned long long>( blockDim.x ) * gridDim.x;
+	for ( unsigned long long i = idx; i < n; i += stride ) {
+		out[i] = in[i] + value;
+	}
+}
+
+__global__ void add_elementwise_fp8_kernel( fp8 *in, fp8 *out, unsigned long long n, fp8 value )
+{
+	unsigned long long const idx = static_cast<unsigned long long>( blockIdx.x ) * blockDim.x + threadIdx.x;
+	unsigned long long const stride = static_cast<unsigned long long>( blockDim.x ) * gridDim.x;
+	float const vadd = static_cast<float>( static_cast<__half>( value ) );
+	for ( unsigned long long i = idx; i < n; i += stride ) {
+		float const v = static_cast<float>( static_cast<__half>( in[i] ) ) + vadd;
+		out[i] = static_cast<fp8>( static_cast<__half>( v ) );
+	}
+}
+
+cudaError_t cuda_add_elementwise( float *in, float *out, std::size_t n, float value )
+{
+	if ( n == 0 ) {
+		return cudaSuccess;
+	}
+	if ( in == nullptr || out == nullptr ) {
+		return cudaErrorInvalidValue;
+	}
+	int const threads = 256;
+	int const blocks = static_cast<int>( ( n + static_cast<std::size_t>( threads ) - 1 )
+	                                   / static_cast<std::size_t>( threads ) );
+
+	add_elementwise_float_kernel<<<blocks, threads>>>( in, out, static_cast<unsigned long long>( n ),
+	                                                   value );
+	return cudaGetLastError();
+}
+
+cudaError_t cuda_add_elementwise( fp8 *in, fp8 *out, std::size_t n, fp8 value )
+{
+	if ( n == 0 ) {
+		return cudaSuccess;
+	}
+	if ( in == nullptr || out == nullptr ) {
+		return cudaErrorInvalidValue;
+	}
+	int const threads = 256;
+	int const blocks = static_cast<int>( ( n + static_cast<std::size_t>( threads ) - 1 )
+	                                   / static_cast<std::size_t>( threads ) );
+
+	add_elementwise_fp8_kernel<<<blocks, threads>>>( in, out, static_cast<unsigned long long>( n ),
+	                                                 value );
+	return cudaGetLastError();
+}
+
+const int threads_per_block = 32*32;
+__global__ void reduce_sum_to_dim_float_kernel( float *in, float *out,
+                                                unsigned long long prefix,
+                                                unsigned long long mid,
+                                                unsigned long long suffix )
+{
+	__shared__ float partial_sums[threads_per_block];
+
+	unsigned long long const idx = blockIdx.x;
+	if ( idx < mid ) {
+		unsigned long long tidx = threadIdx.x;
+		unsigned long long nx = blockDim.x;
+		unsigned long long tidy = threadIdx.y;
+		unsigned long long ny = blockDim.y;
+		unsigned long long start_i = ( prefix*tidx )/nx;
+		unsigned long long end_i = min( ( prefix*(tidx+1) )/nx, prefix );
+		unsigned long long start_j = ( suffix*tidy )/ny;
+		unsigned long long end_j = min( ( suffix*(tidy+1) )/ny, suffix );
+		float partial_sum = 0.f;
+		for ( unsigned long long i = start_i; i < end_i; ++i ) {
+			for ( unsigned long long j = start_j; j < end_j; ++j ) {
+				partial_sum += in[i * mid * suffix + idx * suffix + j];
+			}
+		}
+		partial_sums[tidx*blockDim.y + tidy] = partial_sum;
+	} else {
+		partial_sums[threadIdx.x * blockDim.y + threadIdx.y] = 0.f;
+	}
+	__syncthreads();
+	if ( threadIdx.x == 0 && threadIdx.y == 0 ) {
+		float total = 0.f;
+		for ( int i = 0; i < threads_per_block; ++i ) {
+			total += partial_sums[i];
+		}
+		if ( idx < mid ) {
+			out[idx] = total;
+		}
+	}
+}
+
+cudaError_t cuda_reduce_sum_to_dim( float *in, float *out, std::size_t prefix, std::size_t mid,
+                                    std::size_t suffix )
+{
+	if ( in == nullptr || out == nullptr ) {
+		return cudaErrorInvalidValue;
+	}
+	if ( prefix == 0 || mid == 0 || suffix == 0 ) {
+		return cudaSuccess;
+	}
+
+	dim3 const threads( 32, 32, 1 );
+	dim3 const blocks( static_cast<unsigned>( mid ), 1U, 1U );
+
+	reduce_sum_to_dim_float_kernel<<<blocks, threads>>>(
+	    in, out, static_cast<unsigned long long>( prefix ), static_cast<unsigned long long>( mid ),
+	    static_cast<unsigned long long>( suffix ) );
+
+	return cudaGetLastError();
+}
+
+__global__ void reduce_sum_to_dim_axis_0_float_kernel( float *in, float *out,
+                                                        unsigned long long n,
+                                                        unsigned long long stride )
+{
+	__shared__ float partial_sums[threads_per_block];
+	unsigned long long const idx = blockIdx.x;
+	unsigned long long const tidx = threadIdx.x;
+	unsigned long long const nx = blockDim.x;
+	unsigned long long const start_i = ( stride*tidx )/nx;
+	unsigned long long const end_i = min( ( stride*(tidx+1) )/nx, stride );
+	float partial_sum = 0.f;
+	for ( unsigned long long i = start_i; i < end_i; ++i ) {
+		partial_sum += in[idx * stride + i];
+	}
+	partial_sums[tidx] = partial_sum;
+	__syncthreads();
+	if ( tidx == 0 ) {
+		float total = 0.f;
+		for ( int i = 0; i < threads_per_block; ++i ) {
+			total += partial_sums[i];
+		}
+		out[idx] = total;
+	}
+}
+
+cudaError_t cuda_reduce_sum_to_dim_axis_0( float *in, float *out, std::size_t n, std::size_t stride )
+{
+	if ( in == nullptr || out == nullptr ) {
+		return cudaErrorInvalidValue;
+	}
+	if ( n == 0 || stride == 0 ) {
+		return cudaSuccess;
+	}
+
+	int const threads = threads_per_block;
+	int const blocks = static_cast<int>( ( n + static_cast<std::size_t>( threads ) - 1 )
+	                                   / static_cast<std::size_t>( threads ) );
+	reduce_sum_to_dim_axis_0_float_kernel<<<blocks, threads>>>( in, out, static_cast<unsigned long long>( n ),
+	                                                             static_cast<unsigned long long>( stride ) );
+	return cudaGetLastError();
+}
+
+__global__ void swap_axes_float_kernel( float *in, float *out, unsigned long long n,
+                                        unsigned long *stride,
+                                        unsigned long *new_stride,
+                                        unsigned long long rank,
+                                        unsigned long const *new_axes )
+{
+	constexpr unsigned long long mx_rank = 10;
+	unsigned long long const idx = blockIdx.x;
+	unsigned long long const tidx = threadIdx.x;
+	unsigned long long index[mx_rank] = { 0 };
+	unsigned long long global_tid = idx*blockDim.x*gridDim.x + tidx;
+	unsigned long long global_threads = blockDim.x*gridDim.x;
+	
+	for( unsigned long i = global_tid; i < n; i += global_threads ) {
+		unsigned long long i_copy = i;
+		for( unsigned long j = 0; j + 1 < rank; ++j ) {
+			index[j] = i_copy / stride[j];
+			i_copy %= stride[j];
+		}
+		index[rank-1] = i_copy;
+
+		unsigned long long new_index = 0;
+		for( unsigned long j = 0; j < rank; ++j ) {
+			new_index += index[new_axes[j]] * new_stride[j];
+		}
+		out[new_index] = in[i];
+	}
+}
+
+cudaError_t cuda_swap_axes( float *in, float *out, std::size_t n, std::size_t *strides, std::size_t *new_strides, std::size_t rank, const std::size_t *new_axes )
+{
+	//todo: this can be done better if a thread could use more than one matrix
+	if ( in == nullptr || out == nullptr ) {
+		return cudaErrorInvalidValue;
+	}
+	if ( n == 0 || strides == nullptr || new_strides == nullptr ) {
+		return cudaSuccess;
+	}
+
+	int const threads = threads_per_block;
+	int const blocks = static_cast< int >( ( n + static_cast<std::size_t>( threads ) - 1 )
+	                                   / static_cast<std::size_t>( threads ) );
+	static_assert( sizeof( std::size_t ) == sizeof( unsigned long ),
+	               "cuda_swap_axes expects std::size_t to match unsigned long long" );
+	swap_axes_float_kernel<<<blocks, threads>>>( in, out, static_cast<unsigned long long>( n ),
+	                                             static_cast<unsigned long *>( strides ),
+	                                             static_cast<unsigned long *>( new_strides ),
+	                                             static_cast<unsigned long long>( rank ), 
+	                                             reinterpret_cast<unsigned long const *>( new_axes ) );
+	return cudaGetLastError();
+}
+
+cudaError_t cuda_col2im_float( float const *col, float *im, int N, int C_in, int H, int W,
+                               int Kh, int Kw )
+{
+	if ( col == nullptr || im == nullptr ) {
+		return cudaSuccess;
+	}
+	int const total   = N * C_in * H * W;
+	int const threads = 256;
+	int const blocks  = ( total + threads - 1 ) / threads;
+	col2im_float_kernel<<<blocks, threads>>>( col, im, N, C_in, H, W, Kh, Kw );
+	cudaError_t const err = cudaGetLastError();
+	return err != cudaSuccess ? err : cudaSuccess;
 }
 
 int cuda_device_count()

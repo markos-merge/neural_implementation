@@ -64,6 +64,8 @@ find_package(Eigen3 REQUIRED NO_MODULE
 
 find_package( OpenMP )
 
+find_package(OpenCV REQUIRED)
+
 # Catch2 for tests (prefer system package to avoid FetchContent rebuilds)
 find_package(Catch2 3 QUIET)
 if(NOT Catch2_FOUND)
@@ -79,19 +81,63 @@ endif()
 
 # Core library (Tensor is header-only in include/tensors/tensor.hpp)
 add_library(neural_impl_lib STATIC)
+target_sources(neural_impl_lib PRIVATE src/image_processing/image_augmentation.cpp)
 
 if(NEURAL_CUDA_FOUND)
 	target_sources(neural_impl_lib PRIVATE src/cuda/cuda_runtime.cu src/cuda/cublas_handle.cpp)
 	# cublas: SGEMM/DGEMM etc.; cublasLt: mixed precision / FP8 matmul (your custom FP8 path)
 	target_link_libraries(neural_impl_lib PUBLIC CUDA::cudart CUDA::cublas CUDA::cublasLt)
 	target_compile_definitions(neural_impl_lib PUBLIC NEURAL_CUDA_ENABLED=1)
+
+	# Collect extra hints from pip-installed nvidia/cudnn packages (VIRTUAL_ENV or ~/.local).
+	set(_cudnn_extra_include_hints "")
+	set(_cudnn_extra_lib_hints "")
+	foreach(_base "$ENV{VIRTUAL_ENV}" "$ENV{HOME}/.local")
+		if(NOT _base STREQUAL "")
+			file(GLOB _pip_dirs "${_base}/lib/python*/site-packages/nvidia/cudnn")
+			foreach(_d IN LISTS _pip_dirs)
+				list(APPEND _cudnn_extra_include_hints "${_d}/include")
+				list(APPEND _cudnn_extra_lib_hints     "${_d}/lib")
+			endforeach()
+		endif()
+	endforeach()
+
+	find_path(CUDNN_INCLUDE_DIR cudnn.h
+		HINTS
+			${CUDNN_ROOT}/include
+			$ENV{CUDNN_ROOT}/include
+			${_cudnn_extra_include_hints}
+			/usr/include
+			/usr/local/cuda/include
+			/opt/cuda/include)
+	find_library(CUDNN_LIBRARY
+		NAMES cudnn cudnn.so.9 cudnn.so.8
+		HINTS
+			${CUDNN_ROOT}/lib
+			$ENV{CUDNN_ROOT}/lib
+			${_cudnn_extra_lib_hints}
+			/usr/lib
+			/usr/lib64
+			/usr/local/cuda/lib64
+			/opt/cuda/lib64)
+
+	if(CUDNN_INCLUDE_DIR AND CUDNN_LIBRARY)
+		target_include_directories(neural_impl_lib PUBLIC ${CUDNN_INCLUDE_DIR})
+		target_link_libraries(neural_impl_lib PUBLIC ${CUDNN_LIBRARY})
+		target_sources(neural_impl_lib PRIVATE src/cuda/cudnn_handle.cpp)
+		message(STATUS "cuDNN found: ${CUDNN_LIBRARY} (headers: ${CUDNN_INCLUDE_DIR})")
+	else()
+		message(FATAL_ERROR "CUDA is enabled but cuDNN was not found. Set CUDNN_ROOT to the cuDNN installation prefix.")
+	endif()
+	target_compile_definitions(neural_impl_lib PUBLIC NEURAL_CUDNN_ENABLED=1)
 else()
 	target_sources(neural_impl_lib PRIVATE src/cuda/cuda_runtime_stub.cpp)
 	target_compile_definitions(neural_impl_lib PUBLIC NEURAL_CUDA_ENABLED=0)
+	target_compile_definitions(neural_impl_lib PUBLIC NEURAL_CUDNN_ENABLED=0)
 endif()
 
-# Public headers live under include/; subfolders are added so clients can use short includes
-# (e.g. "tensor.hpp", "sequential_nn.hpp", "sgd_optimizer.hpp", "mnist_loader.hpp").
+# Public headers live under include/ and image_processing/; subfolders are added so clients
+# can use short includes (e.g. "tensor.hpp", "image_augmentation.hpp", "mnist_loader.hpp").
 target_include_directories(neural_impl_lib PUBLIC
 	include
 	include/tensors
@@ -101,8 +147,10 @@ target_include_directories(neural_impl_lib PUBLIC
 	include/nn
 	include/optimizer
 	include/app
+	image_processing
 )
-target_link_libraries(neural_impl_lib PUBLIC Eigen3::Eigen)
+target_link_libraries(neural_impl_lib PUBLIC Eigen3::Eigen ${OpenCV_LIBS})
+target_include_directories(neural_impl_lib PUBLIC ${OpenCV_INCLUDE_DIRS})
 
 option(ENABLE_OPENMP "Enable OpenMP" ON)
 if( ENABLE_OPENMP AND OpenMP_CXX_FOUND )
@@ -113,8 +161,10 @@ else()
 endif()
 
 # Main executable (entry point remains src/main.cpp; demos are under src/app/)
-add_executable(neural_implementation src/main.cpp src/app/mnist_demo.cpp src/app/cifar_demo.cpp src/app/conv_demo.cpp src/app/conv_demo_momentum.cpp)
+add_executable(neural_implementation src/main.cpp src/app/mnist_demo.cpp src/app/cifar_demo.cpp src/app/conv_demo.cpp src/app/conv_demo_momentum.cpp src/app/conv_demo_cuda.cpp)
+# target_include_directories(neural_implementation PRIVATE ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(neural_implementation PRIVATE neural_impl_lib)
+# target_link_libraries(neural_implementation PRIVATE neural_impl_lib)
 
 # Tests
 add_executable(tests

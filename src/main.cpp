@@ -1,4 +1,5 @@
 #include "cifar_demo.hpp"
+#include "conv_demo_cuda.hpp"
 #include "conv_demo_momentum.hpp"
 #include "mnist_demo.hpp"
 #include <iostream>
@@ -14,6 +15,7 @@ int main()
 	// run_mnist_demo();
 	// run_cifar10_demo();
 	// run_conv_demo();
-	run_conv_demo_momentum();
+	// run_conv_demo_momentum();
+	run_conv_demo_cuda();
 	return 0;
 }
