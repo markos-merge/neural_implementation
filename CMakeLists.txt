@@ -86,7 +86,7 @@ target_sources(neural_impl_lib PRIVATE src/image_processing/image_augmentation.c
 if(NEURAL_CUDA_FOUND)
 	target_sources(neural_impl_lib PRIVATE src/cuda/cuda_runtime.cu src/cuda/cublas_handle.cpp)
 	# cublas: SGEMM/DGEMM etc.; cublasLt: mixed precision / FP8 matmul (your custom FP8 path)
-	target_link_libraries(neural_impl_lib PUBLIC CUDA::cudart CUDA::cublas CUDA::cublasLt)
+	target_link_libraries(neural_impl_lib PUBLIC CUDA::cudart CUDA::cublas CUDA::cublasLt CUDA::curand)
 	target_compile_definitions(neural_impl_lib PUBLIC NEURAL_CUDA_ENABLED=1)
 
 	# Collect extra hints from pip-installed nvidia/cudnn packages (VIRTUAL_ENV or ~/.local).
@@ -161,7 +161,7 @@ else()
 endif()
 
 # Main executable (entry point remains src/main.cpp; demos are under src/app/)
-add_executable(neural_implementation src/main.cpp src/app/mnist_demo.cpp src/app/cifar_demo.cpp src/app/conv_demo.cpp src/app/conv_demo_momentum.cpp src/app/conv_demo_cuda.cpp)
+add_executable(neural_implementation src/main.cpp src/app/mnist_demo.cpp src/app/cifar_demo.cpp src/app/conv_demo.cpp src/app/conv_demo_momentum.cpp src/app/conv_demo_cuda.cpp src/app/conv_demo_cuda_small.cpp src/app/conv_demo_cpu_small.cpp)
 # target_include_directories(neural_implementation PRIVATE ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(neural_implementation PRIVATE neural_impl_lib)
 # target_link_libraries(neural_implementation PRIVATE neural_impl_lib)
@@ -171,17 +171,25 @@ add_executable(tests
     tests/test_tensor.cpp
     tests/test_tensor_n.cpp
     tests/test_cuda_tensor.cpp
+    tests/test_cuda_tensor4.cpp
     tests/test_cuda_nn.cpp
+    tests/test_convolutional_layer_cuda.cpp
+    tests/test_conv_net_momentum_dropout_cuda.cpp
     tests/test_cuda_runtime.cpp
     tests/test_linear_layer.cpp
     tests/test_relu_layer.cpp
+    tests/test_dropout_layer.cpp
     tests/test_sigmoid_layer.cpp
     tests/test_softmax_layer.cpp
     tests/test_loss.cpp
     tests/test_sequential_nn.cpp
     tests/test_sgd_optimizer.cpp
+    tests/test_momentum_sgd_pytorch.cpp
+    tests/test_cross_entropy_pytorch.cpp
     tests/test_conv_backward.cpp
     tests/test_max_pool_layer.cpp
+    tests/test_batch_norm_1d_layer.cpp
+    tests/test_pytorch_reference.cpp
 )
 target_link_libraries(tests PRIVATE Catch2::Catch2WithMain neural_impl_lib)
 target_include_directories(tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)

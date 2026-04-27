@@ -4,6 +4,10 @@
 #include <cstddef>
 #include "layer_base.hpp"
 #include <array>
+#if NEURAL_CUDA_ENABLED
+#include "cuda_tensor_n.hpp"
+#include "neural_cuda_layer_sync.hpp"
+#endif
 
 namespace neural {
 
@@ -23,13 +27,15 @@ class BatchNormLayer : public LayerBase<TensorN_t>
 		using tensor_t = TensorN_t;
 		using value_type = typename TensorN_t::value_type;
 
-		/// \p num_features is \f$C\f$ (channel count). \p eps avoids divide-by-zero; \p momentum is the EMA factor for running stats.
+		/// \p num_features is \f$C\f$ (channel count). \p eps avoids divide-by-zero.
+		/// \p momentum matches PyTorch / cuDNN: \(\text{running} \leftarrow (1-m)\,\text{running} + m\,\text{batch}\).
 		BatchNormLayer( std::size_t num_features, value_type eps, value_type momentum );
 
 		std::size_t numFeatures() const { return m_num_features; }
+		bool nonRegularizable() const noexcept { return true; }
 
-		void set_training( bool training ) { m_training = training; }
-		bool is_training() const { return m_training; }
+		void setTraining( bool training ) { m_training = training; }
+		bool isTraining() const { return m_training; }
 
 		/// Learnable scale \f$\gamma\f$ (per channel), shape \f$\{1, C, 1, 1\}\f$.
 		TensorN_t       &getGamma() { return m_gamma; }
@@ -102,7 +108,7 @@ TensorN_t *BatchNormLayer<TensorN_t>::forward()
 	if( m_running_var.size() != this->getInput()->shape()[1] ) {
 		std::array< std::size_t, 4 > const var_shape = { 1, this->getInput()->shape()[1], 1, 1 };
 		m_running_var = TensorN_t( var_shape );
-		m_last_running_var = TensorN_t( var_shape );
+		m_last_running_var = TensorN_t( var_shape, static_cast<value_type>( 1 ) );
 	}
 	
 	if( m_gamma.size() != this->getInput()->shape()[1] ) {
@@ -127,6 +133,11 @@ TensorN_t *BatchNormLayer<TensorN_t>::forward()
 	                         m_eps, m_momentum, m_training, is_first_forward,
 	                         *this->getOutput() );
 
+#if NEURAL_CUDA_ENABLED
+	if constexpr ( is_cuda_tensor4_v<TensorN_t> ) {
+		cuda_layer_sync();
+	}
+#endif
 	return this->getOutput();
 }
 
@@ -151,6 +162,11 @@ TensorN_t *BatchNormLayer<TensorN_t>::backward()
 	                          m_running_mean, m_running_var, m_eps, m_grad_gamma,
 	                          m_grad_beta, *this->getGradOutput() );
 
+#if NEURAL_CUDA_ENABLED
+	if constexpr ( is_cuda_tensor4_v<TensorN_t> ) {
+		cuda_layer_sync();
+	}
+#endif
 	return this->getGradOutput();
 }
 

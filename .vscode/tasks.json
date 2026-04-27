@@ -2,6 +2,15 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
+			"label": "Export coredump (systemd → file)",
+			"type": "shell",
+			"command": "coredumpctl -1 dump -o \"${input:cmakeExe}.core\" \"${input:cmakeExe}\"",
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"problemMatcher": []
+		},
+		{
 			"label": "CMake: build (preset release)",
 			"type": "shell",
 			"command": "cmake --build --preset release",
@@ -55,6 +64,14 @@
 			"problemMatcher": [
 				"$gcc"
 			]
+		}
+	],
+	"inputs": [
+		{
+			"id": "cmakeExe",
+			"type": "command",
+			"command": "cmake.launchTargetPath",
+			"args": {}
 		}
 	]
 }

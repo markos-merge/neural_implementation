@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cuda_runtime_api.h>
 #include <cudnn_ops.h>
 #include <functional>
@@ -195,12 +196,20 @@ class CudaTensorNBase
 
 		CudaTensorNBase &operator*=( CudaTensorNBase const &other );
 		CudaTensorNBase &operator*=( T scalar );
+		/// \p out = \c *this ⊙ \p other; (re)allocates \p out to \c m_shape if needed.
+		void elementwiseMultiply( CudaTensorNBase const &other, CudaTensorNBase &out ) const;
 		CudaTensorNBase &cwiseGreaterInPlace( CudaTensorNBase const &other, T scalar );
 		CudaTensorNBase &mulNSubstractInPlace( CudaTensorNBase const &other, T scalar );
 
 		// ----- misc ---------------------------------------------------------
 
-		void randomizeHe( std::size_t fan_in );
+		template <typename Generator>
+		void randomize( Generator &generator );
+		/// Seeded uniform \f$[0, 1)\f$; uses the \c cuda_random_uniform_float fast path for
+		/// \c float. Deterministic given \p seed.
+		void randomize( std::uint64_t seed );
+		void randomizeHe( std::size_t fan_in, std::uint64_t seed );
+		void randomizePytorchDefault( std::size_t fan_in, std::uint64_t seed );
 
 	protected:
 		T *m_data = nullptr;
@@ -236,19 +245,24 @@ class CudaTensor4 : public CudaTensorNBase<4, T>
 		// ----------------------------------------------------------------
 		// cuDNN — convolution forward
 		//
-		// Valid convolution (pad = 0, stride = 1) via cuDNN; kernel H/W must be odd
-		// so output size matches CPU im2col (padding Kh/2, Kw/2). \p im2col_tensor is not
-		// written here (filled elsewhere if needed). \p gemm_cnhw_layout unused (API parity).
+		// Stride 1, fixed height/width padding 1 in \c cudnnSetConvolution2dDescriptor
+		// (typical 3×3 "same" geometry). \p im2col_tensor is not written here. \p gemm_cnhw_layout
+		// unused (API parity). CPU im2col uses valid-style geometry; paths differ unless both are
+		// aligned to the same padding.
 		// ----------------------------------------------------------------
 
 		/// Intentionally not implemented on device; use another path if you need im2col.
 		void im2Col( std::array<std::size_t, 3> const &kernel_shape,
 		             CudaTensor4<T> &output ) const;
 
+		/// Optional \p cudnn_workspace_cache / \p cudnn_workspace_capacity_bytes: persistent buffer reused across
+		/// calls (e.g. owned by \c ConvolutionalLayer). When both are null, allocates/frees workspace per call.
 		void im2ColConvolution( CudaTensor4<T> const &kernel,
 		                        CudaTensorNBase<2, T> &im2col_tensor,
 		                        CudaTensor4<T> &output,
-		                        CudaTensor4<T> &gemm_cnhw_layout );
+		                        CudaTensor4<T> &gemm_cnhw_layout,
+		                        void **cudnn_workspace_cache = nullptr,
+		                        std::size_t *cudnn_workspace_capacity_bytes = nullptr );
 
 		// ----------------------------------------------------------------
 		// cuDNN — bias broadcast  {1,C,1,1} + {N,C,H,W}
@@ -595,7 +609,8 @@ void CudaTensorNBase< rank, T >::swapAxes( std::array<std::size_t, rank> const &
 	T *out = output.data();
 	T *in = this->data();
 
-	cuda_swap_axes( in, out, this->size(), m_strides.data(), output.m_strides.data(), rank, new_axes );
+	cuda_swap_axes( in, out, this->size(), m_strides.data(), output.m_strides.data(), rank,
+	                new_axes.data() );
 }
 
 template <std::size_t rank, typename T>
@@ -618,6 +633,32 @@ CudaTensorNBase< rank, T > &CudaTensorNBase< rank, T >::operator*=( CudaTensorNB
 		throw std::runtime_error( "CudaTensorNBase::operator*=: cuda multiply failed" );
 	}
 	return *this;
+}
+
+template <std::size_t rank, typename T>
+void CudaTensorNBase< rank, T >::elementwiseMultiply( CudaTensorNBase const &other, CudaTensorNBase &out ) const
+{
+	if ( m_shape != other.m_shape ) {
+		throw std::invalid_argument( "CudaTensorNBase::elementwiseMultiply: shape mismatch" );
+	}
+	if ( this == &out ) {
+		const_cast<CudaTensorNBase &>( *this ) *= other;
+		return;
+	}
+	if ( out.m_shape != m_shape || out.m_data == nullptr ) {
+		out = CudaTensorNBase<rank, T>( m_shape );
+	}
+	if constexpr ( std::is_same_v<T, float> ) {
+		if ( cuda_mul_float( m_data, other.m_data, out.m_data, size() ) != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensorNBase::elementwiseMultiply: cuda_mul_float failed" );
+		}
+	} else if constexpr ( std::is_same_v<T, __nv_fp8_e4m3> ) {
+		if ( cuda_mul_fp8( m_data, other.m_data, out.m_data, size() ) != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensorNBase::elementwiseMultiply: cuda_mul_fp8 failed" );
+		}
+	} else {
+		throw std::invalid_argument( "CudaTensorNBase::elementwiseMultiply: unsupported element type" );
+	}
 }
 
 template <std::size_t rank, typename T>
@@ -680,11 +721,46 @@ CudaTensorNBase< rank, T > &CudaTensorNBase< rank, T >::mulNSubstractInPlace( Cu
 }
 
 template <std::size_t rank, typename T>
-void CudaTensorNBase< rank, T >::randomizeHe( std::size_t fan_in )
+template <typename Generator>
+void CudaTensorNBase< rank, T >::randomize( Generator &generator )
+{
+	if ( m_data == nullptr || size() == 0 ) {
+		return;
+	}
+	std::vector<T> host( size() );
+	std::generate( host.begin(), host.end(), generator );
+	assign( host );
+}
+
+template <std::size_t rank, typename T>
+void CudaTensorNBase< rank, T >::randomize( std::uint64_t seed )
+{
+	if ( m_data == nullptr || size() == 0 ) {
+		return;
+	}
+	if constexpr ( std::is_same_v<T, float> ) {
+		(void)cuda_random_uniform_float( m_data, size(),
+		                                 static_cast<unsigned long long>( seed ) );
+		return;
+	}
+	std::mt19937_64 gen( seed );
+	std::uniform_real_distribution<double> dis( 0.0, 1.0 );
+	std::vector<T> host( size() );
+	for ( auto &v : host ) {
+		if constexpr ( std::is_same_v<T, __nv_fp8_e4m3> ) {
+			v = static_cast<T>( static_cast<__half>( static_cast<float>( dis( gen ) ) ) );
+		} else {
+			throw std::runtime_error( "CudaTensorNBase::randomize: unsupported element type" );
+		}
+	}
+	assign( host );
+}
+
+template <std::size_t rank, typename T>
+void CudaTensorNBase< rank, T >::randomizeHe( std::size_t fan_in, std::uint64_t seed )
 {
 	double const scale = std::sqrt( 2.0 / static_cast<double>( fan_in ) );
-	std::random_device rd;
-	std::mt19937 gen( rd() );
+	std::mt19937_64 gen( seed );
 	std::uniform_real_distribution<double> dis( -scale, scale );
 	std::vector<T> host( size() );
 	for ( auto &v : host ) {
@@ -694,6 +770,28 @@ void CudaTensorNBase< rank, T >::randomizeHe( std::size_t fan_in )
 			v = static_cast<T>( static_cast<__half>( static_cast<float>( dis( gen ) ) ) );
 		} else {
 			throw std::runtime_error( "CudaTensorNBase::randomizeHe: unsupported element type" );
+		}
+	}
+	assign( host );
+}
+
+template <std::size_t rank, typename T>
+void CudaTensorNBase< rank, T >::randomizePytorchDefault( std::size_t fan_in, std::uint64_t seed )
+{
+	if ( fan_in == 0 ) {
+		return;
+	}
+	double const inv_sqrt = 1.0 / std::sqrt( static_cast<double>( fan_in ) );
+	std::mt19937_64 gen( seed );
+	std::uniform_real_distribution<double> dis( -inv_sqrt, inv_sqrt );
+	std::vector<T> host( size() );
+	for ( auto &v : host ) {
+		if constexpr ( std::is_same_v<T, float> ) {
+			v = static_cast<T>( dis( gen ) );
+		} else if constexpr ( std::is_same_v<T, __nv_fp8_e4m3> ) {
+			v = static_cast<T>( static_cast<__half>( static_cast<float>( dis( gen ) ) ) );
+		} else {
+			throw std::runtime_error( "CudaTensorNBase::randomizePytorchDefault: unsupported element type" );
 		}
 	}
 	assign( host );
@@ -711,7 +809,9 @@ template <typename T>
 void CudaTensor4<T>::im2ColConvolution( CudaTensor4<T> const &kernel,
                                         CudaTensorNBase<2, T> &im2col_tensor,
                                         CudaTensor4<T> &output,
-                                        CudaTensor4<T> &gemm_cnhw_layout )
+                                        CudaTensor4<T> &gemm_cnhw_layout,
+                                        void **cudnn_workspace_cache,
+                                        std::size_t *cudnn_workspace_capacity_bytes )
 {
 	(void)gemm_cnhw_layout;
 	(void)im2col_tensor;
@@ -723,8 +823,7 @@ void CudaTensor4<T>::im2ColConvolution( CudaTensor4<T> const &kernel,
 		std::size_t const Kw = ks[3];
 		if ( ( Kh % 2 ) == 0 || ( Kw % 2 ) == 0 ) {
 			throw std::invalid_argument(
-			    "CudaTensor4::im2ColConvolution: cuDNN path requires odd kernel height and width "
-			    "(same output geometry as CPU im2col with padding K/2)" );
+			    "CudaTensor4::im2ColConvolution: cuDNN path requires odd kernel height and width" );
 		}
 
 		cudnnHandle_t &handle = CudnnHandle::instance();
@@ -746,7 +845,7 @@ void CudaTensor4<T>::im2ColConvolution( CudaTensor4<T> const &kernel,
 		}
 
 		detail::CudnnConvDesc conv_desc;
-		st = cudnnSetConvolution2dDescriptor( conv_desc.desc, 0, 0, 1, 1, 1, 1,
+		st = cudnnSetConvolution2dDescriptor( conv_desc.desc, 1, 1, 1, 1, 1, 1,
 		                                        CUDNN_CROSS_CORRELATION, CUDNN_DATA_FLOAT );
 		if ( st != CUDNN_STATUS_SUCCESS ) {
 			throw std::runtime_error( "cudnnSetConvolution2dDescriptor failed" );
@@ -784,8 +883,17 @@ void CudaTensor4<T>::im2ColConvolution( CudaTensor4<T> const &kernel,
 		}
 
 		void *workspace = nullptr;
+		bool const use_persistent_ws =
+		    cudnn_workspace_cache != nullptr && cudnn_workspace_capacity_bytes != nullptr;
 		if ( ws_size > 0 ) {
-			if ( detail::cuda_malloc_retry( &workspace, ws_size ) != cudaSuccess ) {
+			if ( use_persistent_ws ) {
+				cudaError_t const werr = detail::cudnn_workspace_ensure(
+				    cudnn_workspace_cache, cudnn_workspace_capacity_bytes, ws_size );
+				if ( werr != cudaSuccess ) {
+					throw std::runtime_error( "im2ColConvolution: persistent workspace allocation failed" );
+				}
+				workspace = *cudnn_workspace_cache;
+			} else if ( detail::cuda_malloc_retry( &workspace, ws_size ) != cudaSuccess ) {
 				throw std::runtime_error( "im2ColConvolution: workspace allocation failed" );
 			}
 		}
@@ -796,7 +904,7 @@ void CudaTensor4<T>::im2ColConvolution( CudaTensor4<T> const &kernel,
 		                                              filter_desc.desc, kernel.data(), conv_desc.desc,
 		                                              algo, workspace, ws_size, &beta, output_desc.desc,
 		                                              output.data() );
-		if ( workspace != nullptr ) {
+		if ( !use_persistent_ws && workspace != nullptr ) {
 			(void)cudaFree( workspace );
 		}
 		if ( st != CUDNN_STATUS_SUCCESS ) {
@@ -932,7 +1040,8 @@ void batch_norm_forward_nchw( CudaTensor4<T> const &input, CudaTensor4<T> const 
 		float const beta_zero = 0.f;
 		if ( training || is_first_forward ) {
 			CudaTensor4<T> saved_inv_variance( param_shape );
-			double const exp_avg_factor = is_first_forward ? 1.0 : ( 1.0 - static_cast<double>( momentum ) );
+			// Same as PyTorch / cudnnBatchNormalizationForwardTraining: factor multiplies the batch term.
+			double const exp_avg_factor = static_cast<double>( momentum );
 			st = cudnnBatchNormalizationForwardTraining(
 			    handle, CUDNN_BATCHNORM_SPATIAL, &alpha, &beta_zero, x_desc.desc, input.data(),
 			    y_desc.desc, output.data(), bn_desc.desc, gamma.data(), beta.data(), exp_avg_factor,
@@ -1045,7 +1154,7 @@ void batch_norm_backward_nchw( CudaTensor4<T> const &grad_wrt_output,
 	}
 }
 
-/// cuDNN conv backward (matches forward: valid conv, stride 1, \c CUDNN_CROSS_CORRELATION, odd \f$K_h,K_w\f$).
+/// cuDNN conv backward (matches forward: padding 1,1, stride 1, \c CUDNN_CROSS_CORRELATION, odd \f$K_h,K_w\f$).
 /// \param grad_wrt_output_nchw  \(\partial L/\partial y\) (\c LayerBase::getGradInput()).
 /// \param weights               \(W\) (read-only).
 /// \param input_activations     \(x\) from forward (\c getInput()).
@@ -1055,7 +1164,9 @@ void batch_norm_backward_nchw( CudaTensor4<T> const &grad_wrt_output,
 template <typename T>
 void convolutional_backward_cudnn( CudaTensor4<T> &grad_wrt_output_nchw, CudaTensor4<T> &weights,
                                    CudaTensor4<T> const &input_activations, CudaTensor4<T> &grad_weights,
-                                   CudaTensor4<T> &grad_bias_rank4, CudaTensor4<T> &grad_wrt_input_nchw )
+                                   CudaTensor4<T> &grad_bias_rank4, CudaTensor4<T> &grad_wrt_input_nchw,
+                                   void **cudnn_workspace_cache = nullptr,
+                                   std::size_t *cudnn_workspace_capacity_bytes = nullptr )
 {
 	if constexpr ( !std::is_same_v<T, float> ) {
 		throw std::runtime_error( "convolutional_backward_cudnn: only float is supported" );
@@ -1136,7 +1247,7 @@ void convolutional_backward_cudnn( CudaTensor4<T> &grad_wrt_output_nchw, CudaTen
 		}
 
 		detail::CudnnConvDesc conv_desc;
-		st = cudnnSetConvolution2dDescriptor( conv_desc.desc, 0, 0, 1, 1, 1, 1,
+		st = cudnnSetConvolution2dDescriptor( conv_desc.desc, 1, 1, 1, 1, 1, 1,
 		                                        CUDNN_CROSS_CORRELATION, CUDNN_DATA_FLOAT );
 		if ( st != CUDNN_STATUS_SUCCESS ) {
 			throw std::runtime_error( "cudnnSetConvolution2dDescriptor failed" );
@@ -1161,8 +1272,18 @@ void convolutional_backward_cudnn( CudaTensor4<T> &grad_wrt_output_nchw, CudaTen
 
 		std::size_t const ws_size = std::max( ws_data, ws_filter );
 		void *workspace = nullptr;
+		bool const use_persistent_ws =
+		    cudnn_workspace_cache != nullptr && cudnn_workspace_capacity_bytes != nullptr;
 		if ( ws_size > 0 ) {
-			if ( detail::cuda_malloc_retry( &workspace, ws_size ) != cudaSuccess ) {
+			if ( use_persistent_ws ) {
+				cudaError_t const werr = detail::cudnn_workspace_ensure(
+				    cudnn_workspace_cache, cudnn_workspace_capacity_bytes, ws_size );
+				if ( werr != cudaSuccess ) {
+					throw std::runtime_error(
+					    "convolutional_backward_cudnn: persistent workspace allocation failed" );
+				}
+				workspace = *cudnn_workspace_cache;
+			} else if ( detail::cuda_malloc_retry( &workspace, ws_size ) != cudaSuccess ) {
 				throw std::runtime_error( "convolutional_backward_cudnn: workspace allocation failed" );
 			}
 		}
@@ -1174,7 +1295,7 @@ void convolutional_backward_cudnn( CudaTensor4<T> &grad_wrt_output_nchw, CudaTen
 		    grad_wrt_output_nchw.data(), conv_desc.desc, filter_algo, workspace, ws_size, &beta,
 		    dw_desc.desc, grad_weights.data() );
 		if ( st != CUDNN_STATUS_SUCCESS ) {
-			if ( workspace != nullptr ) {
+			if ( !use_persistent_ws && workspace != nullptr ) {
 				(void)cudaFree( workspace );
 			}
 			throw std::runtime_error( "cudnnConvolutionBackwardFilter failed" );
@@ -1184,13 +1305,13 @@ void convolutional_backward_cudnn( CudaTensor4<T> &grad_wrt_output_nchw, CudaTen
 		                                   grad_wrt_output_nchw.data(), conv_desc.desc, data_algo, workspace,
 		                                   ws_size, &beta, dx_desc.desc, grad_wrt_input_nchw.data() );
 		if ( st != CUDNN_STATUS_SUCCESS ) {
-			if ( workspace != nullptr ) {
+			if ( !use_persistent_ws && workspace != nullptr ) {
 				(void)cudaFree( workspace );
 			}
 			throw std::runtime_error( "cudnnConvolutionBackwardData failed" );
 		}
 
-		if ( workspace != nullptr ) {
+		if ( !use_persistent_ws && workspace != nullptr ) {
 			(void)cudaFree( workspace );
 		}
 

@@ -70,7 +70,7 @@ inline bool append_cifar_batch_file( std::filesystem::path const &batch_path,
 
 template <typename TensorT>
 inline CIFAR10Data<TensorT> load_cifar10_train( std::filesystem::path const &bin_dir,
-                                       std::size_t max_samples = 0, bool data_augmentation = true )
+                                       std::size_t max_samples = 0 )
 {
 	CIFAR10Data<TensorT> result;
 	static char const *const kBatches[] = { "data_batch_1.bin", "data_batch_2.bin",

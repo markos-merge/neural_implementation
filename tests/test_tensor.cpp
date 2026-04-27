@@ -80,3 +80,16 @@ TEST_CASE( "Tensor assign scalar fills all elements", "[tensor][assign]" )
 	REQUIRE_THAT( t( 0, 0 ), WithinAbs( 0.f, 1e-6f ) );
 	REQUIRE_THAT( t( 1, 1 ), WithinAbs( 0.f, 1e-6f ) );
 }
+
+TEST_CASE( "Tensor elementwiseMultiply into output resizes and matches operator*", "[tensor][mul]" )
+{
+	Tensor<float> a( 2, 2, 2.f );
+	Tensor<float> b( 2, 2, 3.f );
+	Tensor<float> out( 1, 1, 0.f );
+	a.elementwiseMultiply( b, out );
+	Tensor<float> const expected = a * b;
+	REQUIRE( out.rows() == 2u );
+	REQUIRE( out.cols() == 2u );
+	REQUIRE_THAT( out( 0, 0 ), WithinAbs( expected( 0, 0 ), 1e-6f ) );
+	REQUIRE_THAT( out( 1, 1 ), WithinAbs( expected( 1, 1 ), 1e-6f ) );
+}

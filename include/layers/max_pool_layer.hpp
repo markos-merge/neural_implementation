@@ -5,8 +5,9 @@
 #include <array>
 #include "layer_base.hpp"
 #include "tensor_n.hpp"
-#if NEURAL_CUDNN_ENABLED
+#if NEURAL_CUDA_ENABLED
 #include "cuda_tensor_n.hpp"
+#include "neural_cuda_layer_sync.hpp"
 #endif
 
 namespace neural {
@@ -60,13 +61,17 @@ TensorN_t *MaxPoolLayer<TensorN_t>::forward()
 #if NEURAL_CUDNN_ENABLED
 	if constexpr ( is_cuda_tensor4_v<TensorN_t> ) {
 		max_pool_forward_cudnn( *this->getInput(), *this->getOutput(), m_argmax, m_pool_size, m_stride );
-		return this->getOutput();
 	} else
 #endif
 	{
 		max_pool_forward_nchw( *this->getInput(), m_argmax, *this->getOutput(), m_pool_size, m_stride );
 	}
 
+#if NEURAL_CUDA_ENABLED
+	if constexpr ( is_cuda_tensor4_v<TensorN_t> ) {
+		cuda_layer_sync();
+	}
+#endif
 	return this->getOutput();
 }
 
@@ -81,7 +86,6 @@ TensorN_t *MaxPoolLayer<TensorN_t>::backward()
 	if constexpr ( is_cuda_tensor4_v<TensorN_t> ) {
 		max_pool_backward_cudnn( *this->getInput(), *this->getOutput(), *this->getGradInput(),
 		                         *this->getGradOutput(), m_argmax, m_pool_size, m_stride );
-		return this->getGradOutput();
 	} else
 #endif
 	{
@@ -89,6 +93,11 @@ TensorN_t *MaxPoolLayer<TensorN_t>::backward()
 		                        m_stride );
 	}
 
+#if NEURAL_CUDA_ENABLED
+	if constexpr ( is_cuda_tensor4_v<TensorN_t> ) {
+		cuda_layer_sync();
+	}
+#endif
 	return this->getGradOutput();
 }
 

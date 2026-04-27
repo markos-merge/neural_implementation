@@ -6,11 +6,12 @@ comparison with the C++ CUDA/cuDNN build.
 Dependencies:
   pip install torch torchvision
 
-Geometry matches the cuDNN path (zero padding, odd3x3 kernels):
-  32x32 -> Conv3x3 s1 p0 -> 30x30 -> pool2 -> 15x15 -> Conv 3x3 s1 p0 -> 13x13 -> pool2 -> 6x6
-  Flatten 32*6*6 = 1152 -> Linear 256 -> ReLU -> Linear 10, CrossEntropyLoss (mean).
+Geometry matches the cuDNN path (valid conv, odd 3×3 kernels; last conv is 1×1):
+  32x32 -> Conv3x3 -> 30x30 -> pool2 -> 15x15 -> Conv3x3 -> 13x13 -> pool2 -> 6x6
+  -> Conv3x3 -> 4x4 -> Conv3x3 -> 2x2 -> Conv1x1 -> 2x2
+  Flatten 256*2*2 = 1024 -> Linear 512 -> ReLU -> Linear 256 -> ReLU -> Linear 10, CrossEntropyLoss (mean).
 
-Hyperparameters default to conv_demo_cuda.cpp (SGD lr=0.01, batch 1024, weight decay 1e-4
+Hyperparameters default to conv_demo_cuda.cpp (SGD lr=0.001, batch 256, weight decay 1e-4
 on conv/linear *weights* and BN *weight* only; biases and BN bias have no decay — same pattern
 as the C++ optimizer).
 
@@ -34,8 +35,8 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 
-LR = 0.01  # conv_demo_cuda.cpp opt.m_learning_rate
-BATCH_SIZE = 1024
+LR = 0.001  # conv_demo_cuda.cpp opt.m_learning_rate (smaller LR for deeper net)
+BATCH_SIZE = 256  # conv_demo_cuda.cpp opt.m_batch_size
 WEIGHT_DECAY = 1e-4
 BN_EPS = 1e-5
 BN_MOMENTUM = 0.1
@@ -43,25 +44,35 @@ EPOCHS_DEFAULT = 8000
 
 
 class ConvDemoCudaArch(nn.Module):
-    """Same module stack as ConvBox_t + two Linear layers in conv_demo_cuda.cpp."""
+    """Same module stack as ConvBox_t + three Linear layers in conv_demo_cuda.cpp."""
 
     def __init__(self) -> None:
         super().__init__()
-        # cuDNN path: padding 0 (not k//2)
+        # Match C++ valid conv geometry (padding=0 for 3x3; 1x1 last conv).
         self.features = nn.Sequential(
-            nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=0, bias=True),
-            nn.BatchNorm2d(16, eps=BN_EPS, momentum=BN_MOMENTUM),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=0, bias=True),
+            nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=0, bias=True),
             nn.BatchNorm2d(32, eps=BN_EPS, momentum=BN_MOMENTUM),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=0, bias=True),
+            nn.BatchNorm2d(64, eps=BN_EPS, momentum=BN_MOMENTUM),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=0, bias=True),
+            nn.BatchNorm2d(128, eps=BN_EPS, momentum=BN_MOMENTUM),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=0, bias=True),
+            nn.BatchNorm2d(128, eps=BN_EPS, momentum=BN_MOMENTUM),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 256, kernel_size=1, stride=1, padding=0, bias=True),
+            nn.BatchNorm2d(256, eps=BN_EPS, momentum=BN_MOMENTUM),
+            nn.ReLU(inplace=True),
             nn.Flatten(),
         )
-        # 32 * 6 * 6 == 1152 after the two valid convs +2x2 pools on 32x32 input
         self.head = nn.Sequential(
-            nn.Linear(32 * 6 * 6, 256),
+            nn.Linear(256 * 2 * 2, 512),
+            nn.ReLU(inplace=True),
+            nn.Linear(512, 256),
             nn.ReLU(inplace=True),
             nn.Linear(256, 10),
         )

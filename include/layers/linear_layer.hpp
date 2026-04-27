@@ -2,7 +2,12 @@
 #define LINEAR_LAYER_HPP
 #include "layer_base.hpp"
 #include "tensor_like.hpp"
+#if NEURAL_CUDA_ENABLED
+#include "cuda_tensor.hpp"
+#include "neural_cuda_layer_sync.hpp"
+#endif
 #include <cstddef>
+#include <random>
 #include <stdexcept>
 
 namespace neural {
@@ -83,10 +88,12 @@ void LinearLayer<Tensor>::ensure_weights( std::size_t in_features )
 	}
 	m_weights          = Tensor( in_features, m_out_features );
 	m_grad_weights     = Tensor( in_features, m_out_features );
-	m_bias             = Tensor( m_out_features, 1,
-	                             static_cast<typename Tensor::value_type>( 0. ) );
+	m_bias             = Tensor( m_out_features, 1 );
 	m_grad_bias        = Tensor( m_out_features, 1 );
-	m_weights.randomizeHe( in_features );
+	std::mt19937_64 wgen( std::random_device{}() );
+	std::uint64_t const s = wgen();
+	m_weights.randomizePytorchDefault( in_features, s );
+	m_bias.randomizePytorchDefault( in_features, s + 0x9e3779b97f4a7c15ULL );
 }
 
 template < typename Tensor >
@@ -96,6 +103,11 @@ Tensor *LinearLayer<Tensor>::forward()
 	this->getOutput()->matmulInPlace( *this->getInput(), m_weights );
 	this->getOutput()->addColwiseInPlace( m_bias );
 
+#if NEURAL_CUDA_ENABLED
+	if constexpr ( is_cuda_tensor_v<Tensor> ) {
+		cuda_layer_sync();
+	}
+#endif
 	return this->getOutput();
 }
 
@@ -110,6 +122,11 @@ Tensor *LinearLayer<Tensor>::backward()
 	m_grad_bias.sumAlongAxisInPlace( grad, 0, true );
 	this->getGradOutput()->matmulInPlace( grad, m_weights, false, true );
 
+#if NEURAL_CUDA_ENABLED
+	if constexpr ( is_cuda_tensor_v<Tensor> ) {
+		cuda_layer_sync();
+	}
+#endif
 	return this->getGradOutput();
 }
 
@@ -155,8 +172,10 @@ void LinearLayer<Tensor>::initialize()
 	if ( m_weights.rows() == 0 ) {
 		return;
 	}
-	m_weights.randomizeHe( m_weights.rows() );
-	m_bias.assign( static_cast<typename Tensor::value_type>( 0. ) );
+	std::mt19937_64 wgen( std::random_device{}() );
+	std::uint64_t const s = wgen();
+	m_weights.randomizePytorchDefault( m_weights.rows(), s );
+	m_bias.randomizePytorchDefault( m_weights.rows(), s + 0x9e3779b97f4a7c15ULL );
 }
 
 } // namespace neural

@@ -1,6 +1,8 @@
 #ifndef SEQUENTIAL_NN_HPP
 #define SEQUENTIAL_NN_HPP
 
+#include "batch_norm_1d_layer.hpp"
+#include "dropout_layer.hpp"
 #include "latch_layer.hpp"
 #include "linear_layer.hpp"
 #include "mse_loss.hpp"
@@ -11,6 +13,7 @@
 #include "tensor_like.hpp"
 #include <cstddef>
 #include <stdexcept>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -101,6 +104,20 @@ std::pair<std::size_t, std::size_t> next_slot_shape( LinearLayer<Tensor> const &
 
 template < typename Tensor >
 std::pair<std::size_t, std::size_t> next_slot_shape( ReLULayer<Tensor> const &,
+                                                     std::pair<std::size_t, std::size_t> const &in )
+{
+	return in;
+}
+
+template < typename Tensor >
+std::pair<std::size_t, std::size_t> next_slot_shape( DropoutLayer<Tensor> const &,
+                                                     std::pair<std::size_t, std::size_t> const &in )
+{
+	return in;
+}
+
+template < typename Tensor >
+std::pair<std::size_t, std::size_t> next_slot_shape( BatchNorm1dLayer<Tensor> const &,
                                                      std::pair<std::size_t, std::size_t> const &in )
 {
 	return in;
@@ -243,7 +260,17 @@ typename Tensor::value_type SequentialNN<Tensor, Loss, Layers...>::runTrainStepF
 		throw std::logic_error( "SequentialNN::trainStep: buffers not ready; call ensureBuffersForShape or forward first" );
 	}
 	runForwardFromInputSlot();
-	auto const loss_tensor = m_loss.forward( *m_slots.back().input(), m_target );
+	Tensor &logits = *m_slots.back().input();
+	if ( logits.rows() != m_target.rows() || logits.cols() != m_target.cols() ) {
+		throw std::invalid_argument( std::string( "SequentialNN::trainStep: logits shape " )
+		                             + std::to_string( logits.rows() ) + "x"
+		                             + std::to_string( logits.cols() )
+		                             + " != target " + std::to_string( m_target.rows() ) + "x"
+		                             + std::to_string( m_target.cols() )
+		                             + " — call ensureBuffersForShape(batch_rows, input_cols) for the "
+		                               "current batch, then set input + target to matching rows." );
+	}
+	auto const loss_tensor = m_loss.forward( logits, m_target );
 	backward( m_loss.backward() );
 	return loss_tensor( 0, 0 );
 }

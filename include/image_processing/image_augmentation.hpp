@@ -178,13 +178,24 @@ inline constexpr std::size_t cifar10_augment_cols   = 32;
 inline constexpr std::size_t cifar10_augment_ch     = 3;
 inline constexpr std::size_t cifar10_augment_flat   = cifar10_augment_rows * cifar10_augment_cols * cifar10_augment_ch;
 
-/// Training-time pipeline for CIFAR-10 (horizontal flip, rotation, crop/resize, color jitter,
-/// translation, Gaussian-ish noise, random erasing).
-[[nodiscard]] std::unique_ptr<ImageAugmentation> make_cifar10_training_augmentation();
+/// Training-time pipeline for CIFAR-10 matching the cifar10vgg.py reference:
+/// random horizontal flip (p=0.5) + affine (±15° rotation, ±10% translation), always applied.
+[[nodiscard]] std::unique_ptr<ImageAugmentation> make_cifar10_training_augmentation( float p = 1.0f );
 
-/// Use with \c MomentumSGDOptimizer::train(..., op) / \c SGDOptimizer::train(..., op): after rows are
-/// gathered into \a host_x, applies \a aug per row. Pass \c nullptr for \a aug to skip.
-/// \a input_cols must equal \c cifar10_augment_flat for CIFAR-10 images.
+/// Compute the global scalar mean and standard deviation of \a images (all pixels, all channels)
+/// using OpenCV \c meanStdDev. Returns \c {mean, std}.
+std::pair<float, float> cifar10_compute_normalization(
+    std::vector<Tensor<float>> const &images );
+
+/// Normalize \a images in-place: x ← (x − \a mean) / (\a std + eps).
+void cifar10_apply_normalization( std::vector<Tensor<float>> &images, float mean, float std,
+                                  float eps = 1e-7f );
+
+/// Use with \c MomentumSGDOptimizer::train(..., op) / \c SGDOptimizer::train(..., op): after \c assignBatch
+/// fills \a host_x (images) and \a host_y (targets), rewrites \a host_x in-place: optional augmentation, then
+/// scalar normalization (same as \ref cifar10_apply_normalization) on each row so **training** can keep host
+/// images in [0,1] while **eval** uses \c cifar10_apply_normalization on stored test images only.
+/// \a input_cols must equal \c cifar10_augment_flat.
 struct Cifar10AugmentBatchOp
 {
 	std::size_t input_cols  = 0;
@@ -193,10 +204,14 @@ struct Cifar10AugmentBatchOp
 	std::vector<std::unique_ptr<ImageAugmentation>> augmentations;
 	mutable std::vector<Tensor<float>> tmp_in;
 	mutable std::vector<Tensor<float>> tmp_out;
+	float m_norm_mean  = 0.f;
+	/// 0: skip; else multiply by this after \c (x - m_norm_mean) (i.e. \c 1/(std+eps)).
+	float m_norm_inv   = 0.f;
 
 	Cifar10AugmentBatchOp() = default;
 	Cifar10AugmentBatchOp( std::size_t in_cols, std::size_t out_cols, std::size_t batch_rows,
-	                       std::vector<std::unique_ptr<ImageAugmentation>> &&augmentations );
+	                       std::vector<std::unique_ptr<ImageAugmentation>> &&augmentations,
+	                       float norm_mean, float norm_std, float norm_eps = 1e-7f );
 
 	void operator()( Tensor<float> &host_x, Tensor<float> &host_y ) const;
 };

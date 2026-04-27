@@ -143,8 +143,9 @@ TEST_CASE( "CudaTensor stub operations are callable", "[cuda_tensor][stub]" )
 
 	std::mt19937 gen( 42 );
 	a.randomize( gen );
-	a.randomize();
-	a.randomizeHe( 64u );
+	a.randomize( 7u );
+	std::mt19937_64 hegen( 99u );
+	a.randomizeHe( 64u, hegen() );
 }
 
 TEST_CASE( "CudaTensor maxCoeff returns largest absolute value", "[cuda_tensor][maxCoeff]" )
@@ -213,6 +214,13 @@ TEST_CASE( "CudaTensor element-wise multiply and scalar scale", "[cuda_tensor][m
 	REQUIRE_THAT( c( 0, 1 ), WithinAbs( 6.f, 1e-5f ) );
 	REQUIRE_THAT( c( 1, 0 ), WithinAbs( -3.f, 1e-5f ) );
 	REQUIRE_THAT( c( 1, 1 ), WithinAbs( 1.f, 1e-5f ) );
+
+	CudaTensor<float> out_wrong( 1u, 1u, 0.f );
+	a.elementwiseMultiply( b, out_wrong );
+	REQUIRE( out_wrong.rows() == 2u );
+	REQUIRE( out_wrong.cols() == 2u );
+	REQUIRE_THAT( out_wrong( 0, 0 ), WithinAbs( 1.f, 1e-5f ) );
+	REQUIRE_THAT( out_wrong( 1, 1 ), WithinAbs( 1.f, 1e-5f ) );
 
 	CudaTensor<float> a2( 2u, 2u, 2.f );
 	CudaTensor<float> const b2( 2u, 2u, 3.f );

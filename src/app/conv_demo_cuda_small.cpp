@@ -1,13 +1,12 @@
-#include "conv_demo_cuda.hpp"
+#include "conv_demo_cuda_small.hpp"
 #include <iostream>
 #include <csignal>
 
-
 #if !NEURAL_CUDA_ENABLED || !NEURAL_CUDNN_ENABLED
 
-void run_conv_demo_cuda()
+void run_conv_demo_cuda_small()
 {
-	std::cout << "conv_demo_cuda: build with -DNEURAL_ENABLE_CUDA=ON (cuDNN required).\n";
+	std::cout << "conv_demo_cuda_small: build with -DNEURAL_ENABLE_CUDA=ON (cuDNN required).\n";
 }
 
 #else
@@ -24,7 +23,6 @@ void run_conv_demo_cuda()
 #include "max_pool_layer.hpp"
 #include "neural_cuda_runtime.hpp"
 #include "neural_cuda_layer_sync.hpp"
-#include <cuda_runtime.h>
 #include "relu_layer.hpp"
 #include "batch_norm_1d_layer.hpp"
 #include "dropout_layer.hpp"
@@ -33,70 +31,58 @@ void run_conv_demo_cuda()
 #include "tensor.hpp"
 #include <omp.h>
 #include <chrono>
-#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
-#include <random>
 #include <memory>
 #include <iomanip>
+#include <random>
+#include <string>
+#include <algorithm>
+#include <cmath>
 #include <numbers>
 #include <numeric>
-#include <string>
 
 namespace {
-
-void cuda_sync_checked( char const *context )
-{
-	cudaError_t const e = cudaDeviceSynchronize();
-	if ( e != cudaSuccess ) {
-		std::cout << "conv_demo_cuda: cudaDeviceSynchronize after " << context << ": "
-		          << cudaGetErrorString( e ) << "\n";
-	}
-}
 
 using Tensor2D_t = neural::CudaTensor<float>;
 using TensorN_t  = neural::CudaTensor4<float>;
 
-/// \c DropoutLayer keep_prob: 1.0 = identity (no dropout), matches PyTorch `nn.Dropout(0)`.
-float const kDropoutKeepProb = 1.0f;
+// keep_prob = 1 disables dropout (inverted dropout identity in train).
+float const kDropoutAfterBlock1 = 1.f;
+float const kHeadDrop0           = 1.f;
+float const kHeadDrop1           = 1.f;
 
-// CIFAR VGG as in https://github.com/geifmany/cifar-vgg/blob/master/cifar10vgg.py :
-// blocks 64×2 → 128×2 → 256×3 → 512×3 → 512×3, conv 3×3 same pad, ReLU then BN, MaxPool 2×2 after each block.
-// \c DropoutLayer keep_prob = \c kDropoutKeepProb (1 = no dropout). \c rng_seed_dist( rng ) per layer.
-using ConvBox_t = neural::ConvolutionalBox<
+// Architecture: 32×32 → pool → 16×16 → pool → 8×8 → pool → 4×4; channels 32 → 64 → 64;
+// extra 3×3 conv + ReLU at 4×4 before head dropout.
+// Flat: 4×4×64 = 1024. FC: 256 → 10.
+using SmallConvBox_t = neural::ConvolutionalBox<
     TensorN_t, Tensor2D_t,
+    neural::ConvolutionalLayer<TensorN_t>, neural::BatchNormLayer<TensorN_t>,
+    neural::ReLULayer<TensorN_t>, neural::MaxPoolLayer<TensorN_t>,
+    neural::ConvolutionalLayer<TensorN_t>, neural::BatchNormLayer<TensorN_t>,
+    neural::ReLULayer<TensorN_t>, neural::DropoutLayer<TensorN_t>, neural::MaxPoolLayer<TensorN_t>,
+    neural::ConvolutionalLayer<TensorN_t>, neural::BatchNormLayer<TensorN_t>,
+    neural::ReLULayer<TensorN_t>, neural::MaxPoolLayer<TensorN_t>,
     neural::ConvolutionalLayer<TensorN_t>, neural::ReLULayer<TensorN_t>,
-    neural::BatchNormLayer<TensorN_t>, neural::DropoutLayer<TensorN_t>, neural::ConvolutionalLayer<TensorN_t>, neural::ReLULayer<TensorN_t>,
-    neural::BatchNormLayer<TensorN_t>, neural::MaxPoolLayer<TensorN_t>,
+    neural::DropoutLayer<TensorN_t>,
+    neural::ConvolutionalLayer<TensorN_t>, neural::BatchNormLayer<TensorN_t>,
+    neural::ReLULayer<TensorN_t>, neural::MaxPoolLayer<TensorN_t>,
     neural::ConvolutionalLayer<TensorN_t>, neural::ReLULayer<TensorN_t>,
-    neural::BatchNormLayer<TensorN_t>, neural::DropoutLayer<TensorN_t>, neural::ConvolutionalLayer<TensorN_t>, neural::ReLULayer<TensorN_t>,
-    neural::BatchNormLayer<TensorN_t>, neural::MaxPoolLayer<TensorN_t>,
-    neural::ConvolutionalLayer<TensorN_t>, neural::ReLULayer<TensorN_t>,
-    neural::BatchNormLayer<TensorN_t>, neural::DropoutLayer<TensorN_t>, neural::ConvolutionalLayer<TensorN_t>, neural::ReLULayer<TensorN_t>,
-    neural::BatchNormLayer<TensorN_t>, neural::DropoutLayer<TensorN_t>, neural::ConvolutionalLayer<TensorN_t>, neural::ReLULayer<TensorN_t>,
-    neural::BatchNormLayer<TensorN_t>, neural::MaxPoolLayer<TensorN_t>,
-    neural::ConvolutionalLayer<TensorN_t>, neural::ReLULayer<TensorN_t>,
-    neural::BatchNormLayer<TensorN_t>, neural::DropoutLayer<TensorN_t>, neural::ConvolutionalLayer<TensorN_t>, neural::ReLULayer<TensorN_t>,
-    neural::BatchNormLayer<TensorN_t>, neural::DropoutLayer<TensorN_t>, neural::ConvolutionalLayer<TensorN_t>, neural::ReLULayer<TensorN_t>,
-    neural::BatchNormLayer<TensorN_t>, neural::MaxPoolLayer<TensorN_t>,
-    neural::ConvolutionalLayer<TensorN_t>, neural::ReLULayer<TensorN_t>,
-    neural::BatchNormLayer<TensorN_t>, neural::DropoutLayer<TensorN_t>, neural::ConvolutionalLayer<TensorN_t>, neural::ReLULayer<TensorN_t>,
-    neural::BatchNormLayer<TensorN_t>, neural::DropoutLayer<TensorN_t>, neural::ConvolutionalLayer<TensorN_t>, neural::ReLULayer<TensorN_t>,
-    neural::BatchNormLayer<TensorN_t>, neural::MaxPoolLayer<TensorN_t>, neural::DropoutLayer<TensorN_t>>;
+    neural::DropoutLayer<TensorN_t>
+		>;
 
-using ConvNN_t = neural::SequentialNN<
+using SmallConvNN_t = neural::SequentialNN<
     Tensor2D_t,
     neural::SoftmaxCrossEntropyLoss<Tensor2D_t>,
-    ConvBox_t,
+    SmallConvBox_t,
     neural::LinearLayer<Tensor2D_t>,
-    neural::ReLULayer<Tensor2D_t>,
     neural::BatchNorm1dLayer<Tensor2D_t>,
+    neural::ReLULayer<Tensor2D_t>,
     neural::DropoutLayer<Tensor2D_t>,
     neural::LinearLayer<Tensor2D_t>>;
 
-/// Batch norm + dropout: \p training true during SGD, false for eval (accuracy / inference).
-void set_train_mode( ConvNN_t &nn, bool training )
+void set_train_mode( SmallConvNN_t &nn, bool training )
 {
 	nn.forEachLayer( [training]( auto &layer ) {
 		if constexpr ( requires { layer.setTraining( training ); } ) {
@@ -108,7 +94,8 @@ void set_train_mode( ConvNN_t &nn, bool training )
 /// Mean cross-entropy on a host dataset (e.g. normalized test fold).
 /// Caller must set \ref set_train_mode( \p nn, false ) then \ref nn.ensureBuffersForShape( batch_size, in_cols )
 /// before calling. Restores \p nn buffer rows to \p batch_size before return (after any smaller tail batch).
-float mean_cross_entropy_on_host( ConvNN_t &nn, std::vector<neural::Tensor<float>> const &images,
+float mean_cross_entropy_on_host( SmallConvNN_t &nn,
+                                  std::vector<neural::Tensor<float>> const &images,
                                   std::vector<neural::Tensor<float>> const &labels,
                                   std::size_t batch_size )
 {
@@ -117,9 +104,9 @@ float mean_cross_entropy_on_host( ConvNN_t &nn, std::vector<neural::Tensor<float
 	}
 	neural::SoftmaxCrossEntropyLoss<neural::Tensor<float>> loss_fn;
 	double sum_weighted = 0.0;
-	std::size_t const n         = images.size();
-	std::size_t const in_cols   = images[0].cols();
-	std::size_t const out_cols  = labels[0].cols();
+	std::size_t const n = images.size();
+	std::size_t const in_cols  = images[0].cols();
+	std::size_t const out_cols = labels[0].cols();
 	for ( std::size_t start = 0; start < n; start += batch_size ) {
 		std::size_t const b = std::min( batch_size, n - start );
 		nn.ensureBuffersForShape( b, in_cols );
@@ -146,7 +133,7 @@ float mean_cross_entropy_on_host( ConvNN_t &nn, std::vector<neural::Tensor<float
 float train_accuracy_augmented_replay( std::size_t epoch, std::size_t batch_size,
                                        std::vector<neural::Tensor<float>> const &inputs,
                                        std::vector<neural::Tensor<float>> const &targets,
-                                       neural::Cifar10AugmentBatchOp const &op, ConvNN_t &nn )
+                                       neural::Cifar10AugmentBatchOp const &op, SmallConvNN_t &nn )
 {
 	std::size_t const n = inputs.size();
 	std::size_t const total_batches = n / batch_size;
@@ -165,7 +152,7 @@ float train_accuracy_augmented_replay( std::size_t epoch, std::size_t batch_size
 	neural::Tensor<float> host_x( batch_size, in_cols );
 	neural::Tensor<float> host_y( batch_size, targets[0].cols() );
 	set_train_mode( nn, true );
-	nn.ensureBuffersForShape( batch_size, in_cols );
+	nn.ensureBuffersForShape( batch_size, in_cols ); // always after train/eval toggle
 	std::size_t correct = 0;
 	for ( std::size_t k = 0; k < total_batches; ++k ) {
 		std::size_t const window_start = k * batch_size;
@@ -198,149 +185,117 @@ float train_accuracy_augmented_replay( std::size_t epoch, std::size_t batch_size
 } // namespace
 
 namespace {
-std::sig_atomic_t volatile gSignalStatus;
+std::sig_atomic_t volatile gSignalStatusSmall;
 }
 
-void signal_handler(int signal)
+void signal_handler_small( int signal )
 {
-    gSignalStatus = signal;
+	gSignalStatusSmall = signal;
 }
 
-void run_conv_demo_cuda()
+void run_conv_demo_cuda_small()
 {
-	std::signal( SIGINT, signal_handler );
-	std::cout << "Conv demo (CIFAR-10, CUDA)\n";
+	std::signal( SIGINT, signal_handler_small );
+	std::cout << "CIFAR-10 small conv demo (CUDA) — for dropout / pipeline debugging\n";
 
 	if ( !neural::cuda_runtime_ready() ) {
 		std::cout << "No CUDA device available.\n";
 		return;
 	}
-	cuda_sync_checked( "cuda_runtime_ready" );
 
 	std::filesystem::path const bin_dir = neural::find_cifar10_bin_dir();
 	if ( bin_dir.empty() ) {
-		std::cout << "Could not find CIFAR-10 binaries. Download cifar-10-binary.tar.gz from\n"
-		             "  https://www.cs.toronto.edu/~kriz/cifar.html\n"
-		             "and extract so that data_batch_1.bin is under data/cifar/cifar-10-batches-bin/\n";
+		std::cout << "Could not find CIFAR-10 binaries.\n";
 		return;
 	}
 
-	// All five `data_batch_*.bin` files → 50 000 training samples. The official
-	// `test_batch.bin` (10 000) is used for both periodic val (if enabled) and final test.
 	auto train_data = neural::load_cifar10_train<neural::Tensor<float>>( bin_dir, 0 );
 	if ( train_data.count == 0 ) {
 		std::cout << "Failed to load training data from " << bin_dir.string() << "\n";
 		return;
 	}
-
 	auto test_data = neural::load_cifar10_test<neural::Tensor<float>>( bin_dir, 0 );
 
-	std::cout << "Loaded " << train_data.count << " training samples (host Tensor<float>)";
+	std::cout << "Loaded " << train_data.count << " training samples";
 	if ( test_data.count > 0 )
-		std::cout << ", " << test_data.count << " test samples (host) for val/test";
+		std::cout << ", " << test_data.count << " test samples";
 	std::cout << ".\n";
-	std::cout << "Training: aug on [0,1] (flip+affine), then scalar normalize from train stats (test stored normalized).\n";
+
 	auto const [norm_mean, norm_std] = neural::cifar10_compute_normalization( train_data.images );
-	std::cout << "CIFAR-10 train statistics: mean=" << norm_mean << "  std=" << norm_std << "\n";
+	std::cout << "Train stats: mean=" << norm_mean << "  std=" << norm_std
+	          << "  (aug on [0,1], normalize in batch op; test stored normalized)\n";
 	if ( test_data.count > 0 )
 		neural::cifar10_apply_normalization( test_data.images, norm_mean, norm_std );
 
-	/// Which learning-rate rule to use each epoch (both are implemented below; flip this to try the other).
-	enum class LrScheduleKind : std::uint8_t { Cosine, CifarVggStep };
-	LrScheduleKind const kLrSchedule = LrScheduleKind::CifarVggStep;
-	// Cosine decay from \p lr_max to \p lr_min over the first \p kCosineLrOverEpochs (existing demo).
-	float const     kLrMaxCosine     = 0.01f;
-	float const     kLrMinCosine   = 1e-4f;
-	std::size_t const kCosineLrOverEpochs = 1000;
-	// Step LR as in cifar10vgg (Keras / SGD + momentum 0.9, Nesterov). Base 0.1; ×0.5 every 20 epochs.
-	float const     kLrBaseCifarVgg       = 0.1f;
-	float const     kLrWarmupStart        = 0.01f;
-	std::size_t const kWarmupEpochs       = 5;
-	std::size_t const kLrDropEveryEpochs  = 20;
+	/// Same two schedules as `conv_demo_cuda.cpp`, scaled to this demo’s 0.01 base (vs 0.1 on the big VGG run).
+	enum class LrScheduleKind : std::uint8_t { Cosine, Step };
+	LrScheduleKind const kLrSchedule = LrScheduleKind::Step;
+	float const       kLrMaxCosine       = 0.1f;
+	float const       kLrMinCosine       = 1e-4f;
+	std::size_t const kCosineLrOverEpochs = 250;
+	float const       kLrBaseStep        = 0.1f;
+	// Use 0.01 like `conv_demo_cuda.cpp` — 0.001 makes the first few epochs so slow that
+	// the printed epoch-mean loss barely moves; this is a schedule choice, not a test failure.
+	float const       kLrWarmupStart     = 0.01f;
+	std::size_t const kWarmupEpochs      = 5;
+	std::size_t const kLrDropEveryEpochs = 20;
 	if ( kLrSchedule == LrScheduleKind::Cosine ) {
 		std::cout << "LR schedule: cosine (max=" << kLrMaxCosine << " → min=" << kLrMinCosine
 		          << " over " << kCosineLrOverEpochs << " epochs).\n";
 	} else {
-		std::cout << "LR schedule: cifar10vgg step (base " << kLrBaseCifarVgg
-		          << " × 0.5^⌊epoch/" << kLrDropEveryEpochs << "⌋)"
-		          << ", warmup " << kWarmupEpochs << " epochs (" << kLrWarmupStart << "→" << kLrBaseCifarVgg << ").\n";
+		std::cout << "LR schedule: step (base " << kLrBaseStep << " x 0.5^((epoch-warmup)/"
+		          << kLrDropEveryEpochs << ")), warmup " << kWarmupEpochs << " epochs ("
+		          << kLrWarmupStart << "→" << kLrBaseStep << ").\n";
 	}
 
 	std::mt19937 rng( std::random_device{}() );
 	std::uniform_int_distribution<std::uint32_t> rng_seed_dist( 0, std::numeric_limits<std::uint32_t>::max() );
-	ConvBox_t box(
+
+	// 3 / 2 / 2 / 2 stride-2 pools: 32 → 16 → 8 → 4; flat 4×4×64 = 1024.
+	SmallConvBox_t box(
 	    3, 32, 32,
+	    neural::ConvolutionalLayer<TensorN_t>( 32, 3 ),
+	    neural::BatchNormLayer<TensorN_t>( 32, 1e-5f, 0.01f ),
+	    neural::ReLULayer<TensorN_t>(),
+	    neural::MaxPoolLayer<TensorN_t>( 2, 2 ),
+	    neural::ConvolutionalLayer<TensorN_t>( 64, 3 ),
+	    neural::BatchNormLayer<TensorN_t>( 64, 1e-5f, 0.01f ),
+	    neural::ReLULayer<TensorN_t>(),
+	    neural::DropoutLayer<TensorN_t>( kDropoutAfterBlock1, rng_seed_dist( rng ) ),
+	    neural::MaxPoolLayer<TensorN_t>( 2, 2 ),
+	    neural::ConvolutionalLayer<TensorN_t>( 64, 3 ),
+	    neural::BatchNormLayer<TensorN_t>( 64, 1e-5f, 0.01f ),
+	    neural::ReLULayer<TensorN_t>(),
+	    neural::MaxPoolLayer<TensorN_t>( 2, 2 ),
 	    neural::ConvolutionalLayer<TensorN_t>( 64, 3 ),
 	    neural::ReLULayer<TensorN_t>(),
-	    neural::BatchNormLayer<TensorN_t>( 64, 1e-5f, 0.01f ),
-	    neural::DropoutLayer<TensorN_t>( kDropoutKeepProb, rng_seed_dist( rng ) ),
-	    neural::ConvolutionalLayer<TensorN_t>( 64, 3 ),
+	    neural::DropoutLayer<TensorN_t>( kHeadDrop0, rng_seed_dist( rng ) ),
+	    neural::ConvolutionalLayer<TensorN_t>( 128, 3 ),
+	    neural::BatchNormLayer<TensorN_t>( 128, 1e-5f, 0.01f ),
 	    neural::ReLULayer<TensorN_t>(),
-	    neural::BatchNormLayer<TensorN_t>( 64, 1e-5f, 0.01f ),
 	    neural::MaxPoolLayer<TensorN_t>( 2, 2 ),
 	    neural::ConvolutionalLayer<TensorN_t>( 128, 3 ),
 	    neural::ReLULayer<TensorN_t>(),
-	    neural::BatchNormLayer<TensorN_t>( 128, 1e-5f, 0.01f ),
-	    neural::DropoutLayer<TensorN_t>( kDropoutKeepProb, rng_seed_dist( rng ) ),
-	    neural::ConvolutionalLayer<TensorN_t>( 128, 3 ),
-	    neural::ReLULayer<TensorN_t>(),
-	    neural::BatchNormLayer<TensorN_t>( 128, 1e-5f, 0.01f ),
-	    neural::MaxPoolLayer<TensorN_t>( 2, 2 ),
-	    neural::ConvolutionalLayer<TensorN_t>( 256, 3 ),
-	    neural::ReLULayer<TensorN_t>(),
-	    neural::BatchNormLayer<TensorN_t>( 256, 1e-5f, 0.01f ),
-	    neural::DropoutLayer<TensorN_t>( kDropoutKeepProb, rng_seed_dist( rng ) ),
-	    neural::ConvolutionalLayer<TensorN_t>( 256, 3 ),
-	    neural::ReLULayer<TensorN_t>(),
-	    neural::BatchNormLayer<TensorN_t>( 256, 1e-5f, 0.01f ),
-	    neural::DropoutLayer<TensorN_t>( kDropoutKeepProb, rng_seed_dist( rng ) ),
-	    neural::ConvolutionalLayer<TensorN_t>( 256, 3 ),
-	    neural::ReLULayer<TensorN_t>(),
-	    neural::BatchNormLayer<TensorN_t>( 256, 1e-5f, 0.01f ),
-	    neural::MaxPoolLayer<TensorN_t>( 2, 2 ),
-	    neural::ConvolutionalLayer<TensorN_t>( 512, 3 ),
-	    neural::ReLULayer<TensorN_t>(),
-	    neural::BatchNormLayer<TensorN_t>( 512, 1e-5f, 0.01f ),
-	    neural::DropoutLayer<TensorN_t>( kDropoutKeepProb, rng_seed_dist( rng ) ),
-	    neural::ConvolutionalLayer<TensorN_t>( 512, 3 ),
-	    neural::ReLULayer<TensorN_t>(),
-	    neural::BatchNormLayer<TensorN_t>( 512, 1e-5f, 0.01f ),
-	    neural::DropoutLayer<TensorN_t>( kDropoutKeepProb, rng_seed_dist( rng ) ),
-	    neural::ConvolutionalLayer<TensorN_t>( 512, 3 ),
-	    neural::ReLULayer<TensorN_t>(),
-	    neural::BatchNormLayer<TensorN_t>( 512, 1e-5f, 0.01f ),
-	    neural::MaxPoolLayer<TensorN_t>( 2, 2 ),
-	    neural::ConvolutionalLayer<TensorN_t>( 512, 3 ),
-	    neural::ReLULayer<TensorN_t>(),
-	    neural::BatchNormLayer<TensorN_t>( 512, 1e-5f, 0.01f ),
-	    neural::DropoutLayer<TensorN_t>( kDropoutKeepProb, rng_seed_dist( rng ) ),
-	    neural::ConvolutionalLayer<TensorN_t>( 512, 3 ),
-	    neural::ReLULayer<TensorN_t>(),
-	    neural::BatchNormLayer<TensorN_t>( 512, 1e-5f, 0.01f ),
-	    neural::DropoutLayer<TensorN_t>( kDropoutKeepProb, rng_seed_dist( rng ) ),
-	    neural::ConvolutionalLayer<TensorN_t>( 512, 3 ),
-	    neural::ReLULayer<TensorN_t>(),
-	    neural::BatchNormLayer<TensorN_t>( 512, 1e-5f, 0.01f ),
-	    neural::MaxPoolLayer<TensorN_t>( 2, 2 ),
-	    neural::DropoutLayer<TensorN_t>( kDropoutKeepProb, rng_seed_dist( rng ) ) );
+	    neural::DropoutLayer<TensorN_t>( kHeadDrop0, rng_seed_dist( rng ) ) );
 
-	ConvNN_t nn( box,
-	             neural::LinearLayer<Tensor2D_t>( 512 ), neural::ReLULayer<Tensor2D_t>(),
-	             neural::BatchNorm1dLayer<Tensor2D_t>( 512, 1e-5f, 0.01f ),
-	             neural::DropoutLayer<Tensor2D_t>( kDropoutKeepProb, rng_seed_dist( rng ) ),
-	             neural::LinearLayer<Tensor2D_t>( 10 ) );
+	SmallConvNN_t nn(
+	    box,
+	    neural::LinearLayer<Tensor2D_t>( 256 ),
+	    neural::BatchNorm1dLayer<Tensor2D_t>( 256, 1e-5f, 0.01f ),
+	    neural::ReLULayer<Tensor2D_t>(),
+	    neural::DropoutLayer<Tensor2D_t>( kHeadDrop1, rng_seed_dist( rng ) ),
+	    neural::LinearLayer<Tensor2D_t>( 10 ) );
 
-	neural::MomentumSGDOptimizer<Tensor2D_t, ConvNN_t> opt( nn );
+	neural::MomentumSGDOptimizer<Tensor2D_t, SmallConvNN_t> opt( nn );
 	opt.m_learning_rate  = kLrSchedule == LrScheduleKind::Cosine ? kLrMaxCosine : kLrWarmupStart;
-	opt.m_momentum       = 0.9f;
-	opt.m_batch_size     = 128;
-	opt.m_epochs         = 250;
+	opt.m_momentum      = 0.9f;
+	opt.m_batch_size    = 512;
+	opt.m_epochs        = 40;
 	opt.m_l2_regularizer = 0.0001f;
-	opt.m_nesterov       = true;
-	cuda_sync_checked( "model_and_optimizer_init" );
+	opt.m_nesterov      = true;
 
-	auto last_epoch_end    = std::chrono::steady_clock::now();
-	float loss_sum_epoch   = 0.f;
+	auto last_epoch_end  = std::chrono::steady_clock::now();
+	float loss_sum_epoch = 0.f;
 
 	std::vector<std::unique_ptr<neural::ImageAugmentation>> cifar_aug;
 	cifar_aug.reserve( omp_get_max_threads() );
@@ -360,14 +315,13 @@ void run_conv_demo_cuda()
 		    loss_sum_epoch += loss;
 		    if ( batch_idx + 1 < batch_max )
 			    return ans;
-		    float const mean_loss =
-		        loss_sum_epoch / static_cast<float>( batch_max );
-		    loss_sum_epoch = 0.f;
-		    auto const now = std::chrono::steady_clock::now();
+		    float const mean_loss = loss_sum_epoch / static_cast<float>( batch_max );
+		    loss_sum_epoch        = 0.f;
+		    auto const now        = std::chrono::steady_clock::now();
 		    double const elapsed =
 		        std::chrono::duration<double>( now - last_epoch_end ).count();
-		    last_epoch_end       = now;
-		    float const lr_print = opt.m_learning_rate;
+		    last_epoch_end        = now;
+		    float const lr_print  = opt.m_learning_rate;
 
 		    float const tr_acc = train_accuracy_augmented_replay(
 		        epoch, opt.m_batch_size, train_data.images, train_data.labels, cifar_batch_op, nn );
@@ -389,17 +343,17 @@ void run_conv_demo_cuda()
 			    float const progress = std::min(
 			        static_cast<float>( epoch ) / static_cast<float>( kCosineLrOverEpochs ),
 			        1.f );
-			    opt.m_learning_rate =
-			        kLrMinCosine +
-			        0.5f * ( kLrMaxCosine - kLrMinCosine ) *
-			            ( 1.f + std::cos( std::numbers::pi_v<float> * progress ) );
+			    opt.m_learning_rate = kLrMinCosine +
+			                          0.5f * ( kLrMaxCosine - kLrMinCosine ) *
+			                              ( 1.f + std::cos( std::numbers::pi_v<float> * progress ) );
 		    } else {
 			    if ( epoch < kWarmupEpochs ) {
 				    float const t = static_cast<float>( epoch + 1 ) / static_cast<float>( kWarmupEpochs );
-				    opt.m_learning_rate = kLrWarmupStart + t * ( kLrBaseCifarVgg - kLrWarmupStart );
+				    opt.m_learning_rate =
+				        kLrWarmupStart + t * ( kLrBaseStep - kLrWarmupStart );
 			    } else {
 				    std::size_t const vgg_step = ( epoch - kWarmupEpochs ) / kLrDropEveryEpochs;
-				    opt.m_learning_rate = kLrBaseCifarVgg * static_cast<float>(
+				    opt.m_learning_rate = kLrBaseStep * static_cast<float>(
 				        std::pow( 0.5, static_cast<double>( vgg_step ) ) );
 			    }
 		    }
@@ -411,10 +365,10 @@ void run_conv_demo_cuda()
 		              << elapsed << "\n"
 		              << std::flush;
 
-		    bool const signal_status = gSignalStatus != 0;
-		    return signal_status ? true : ans;
-	    } );
-	cuda_sync_checked( "opt.train" );
+		    bool const stop = ( gSignalStatusSmall != 0 );
+		    return stop ? true : ans;
+	    },
+	    cifar_batch_op );
 
 	float te_loss = 0.f;
 	float te_acc  = 0.f;
@@ -422,7 +376,7 @@ void run_conv_demo_cuda()
 		set_train_mode( nn, false );
 		nn.ensureBuffersForShape( opt.m_batch_size, train_data.images[0].cols() );
 		te_loss = mean_cross_entropy_on_host( nn, test_data.images, test_data.labels,
-		                                        opt.m_batch_size );
+		                                      opt.m_batch_size );
 		te_acc = neural::compute_accuracy( nn, test_data.images, test_data.labels, 10,
 		                                   opt.m_batch_size );
 	}

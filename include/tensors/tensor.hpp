@@ -3,13 +3,22 @@
 
 #include <Eigen/Dense>
 #include <cmath>
+#include <cstdint>
 #include <iterator>
 #include <memory>
 #include <random>
 #include <stdexcept>
 #include <vector>
+#include <type_traits>
 
 namespace neural {
+
+template <typename U>
+struct is_cuda_tensor : std::false_type
+{
+};
+template <typename U>
+inline constexpr bool is_cuda_tensor_v = is_cuda_tensor<U>::value;
 
 template <typename T = float>
 class Tensor
@@ -69,6 +78,8 @@ class Tensor
 		Tensor divideRowsWithCol( Tensor const &other ) const;
 		Tensor &divideRowsWithColInPlace( Tensor const &other );
 		Tensor &mulNSubstractInPlace( Tensor const &other, Tensor::value_type scalar );
+		/// Elementwise product into \p out; resizes \p out if its shape differs from \c *this.
+		void elementwiseMultiply( Tensor const &other, Tensor &out ) const;
 
 		value_type maxCoeff() const;
 
@@ -104,8 +115,13 @@ class Tensor
 
 		template <typename Generator>
 		void randomize( Generator &generator ) noexcept;
-		void randomize() noexcept;
-		void randomizeHe( std::size_t fan_in ) noexcept;
+		/// Seeded uniform \f$[0, 1)\f$; deterministic given \p seed. Useful for reproducible
+		/// consumers (e.g. \c DropoutLayer driving a tensor RNG from its own seeded state).
+		void randomize( std::uint64_t seed ) noexcept;
+		void randomizeHe( std::size_t fan_in, std::uint64_t seed ) noexcept;
+		/// PyTorch \c nn.Linear / \c nn.Conv default: \c kaiming_uniform_(\,a=√5\,) → uniform
+		/// in \f$(-1/\sqrt{\text{fan\_in}},\,1/\sqrt{\text{fan\_in}})\f$ (see PyTorch \c reset_parameters).
+		void randomizePytorchDefault( std::size_t fan_in, std::uint64_t seed ) noexcept;
 	private:
 		matrix_type m_mat;
 };
@@ -443,6 +459,20 @@ Tensor<T> &Tensor<T>::divideRowsWithColInPlace( Tensor const &other )
 }
 
 template < typename T >
+void Tensor<T>::elementwiseMultiply( Tensor const &other, Tensor &out ) const
+{
+	if ( rows() != other.rows() || cols() != other.cols() ) {
+		throw std::invalid_argument(
+		    "Tensor::elementwiseMultiply(): incompatible dimensions" );
+	}
+	if ( out.rows() != rows() || out.cols() != cols() ) {
+		out.m_mat.resize( static_cast<Eigen::Index>( rows() ),
+		                  static_cast<Eigen::Index>( cols() ) );
+	}
+	out.m_mat = ( m_mat.array() * other.m_mat.array() ).matrix().eval();
+}
+
+template < typename T >
 Tensor<T> &Tensor<T>::mulNSubstractInPlace( Tensor const &other, Tensor::value_type scalar )
 {
 	m_mat -= other.m_mat*scalar;
@@ -700,22 +730,33 @@ void Tensor<T>::randomize( Generator &generator ) noexcept
 }
 
 template <typename T>
-void Tensor<T>::randomize() noexcept
+void Tensor<T>::randomize( std::uint64_t seed ) noexcept
 {
-	std::random_device rd;
-	std::mt19937 gen( rd() );
+	std::mt19937_64 gen( seed );
 	std::uniform_real_distribution<double> dis( 0.0, 1.0 );
 	auto generator = [&]() { return static_cast<T>( dis( gen ) ); };
 	randomize( generator );
 }
 
 template <typename T>
-void Tensor<T>::randomizeHe( std::size_t fan_in ) noexcept
+void Tensor<T>::randomizeHe( std::size_t fan_in, std::uint64_t seed ) noexcept
 {
 	double const scale = std::sqrt( 2.0 / static_cast<double>( fan_in ) );
-	std::random_device rd;
-	std::mt19937 gen( rd() );
+	std::mt19937_64 gen( seed );
 	std::uniform_real_distribution<double> dis( -scale, scale );
+	auto generator = [&]() { return static_cast<T>( dis( gen ) ); };
+	randomize( generator );
+}
+
+template <typename T>
+void Tensor<T>::randomizePytorchDefault( std::size_t fan_in, std::uint64_t seed ) noexcept
+{
+	if ( fan_in == 0 ) {
+		return;
+	}
+	double const inv_sqrt = 1.0 / std::sqrt( static_cast<double>( fan_in ) );
+	std::mt19937_64 gen( seed );
+	std::uniform_real_distribution<double> dis( -inv_sqrt, inv_sqrt );
 	auto generator = [&]() { return static_cast<T>( dis( gen ) ); };
 	randomize( generator );
 }

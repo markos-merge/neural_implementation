@@ -14,6 +14,7 @@
 #include "cuda_mem.hpp"
 #endif
 #include <algorithm>
+#include <cstdint>
 #include <iterator>
 #include <random>
 #include <cmath>
@@ -103,9 +104,11 @@ class CudaTensor
 
 		CudaTensor &matmulInPlace( CudaTensor const &m1, CudaTensor const &m2,
 		                           bool transpose_first = false, bool transpose_second = false );
-	
-	CudaTensor &elementwiseMultiplyInPlace( CudaTensor const &other );
-	CudaTensor &mulNSubstractInPlace( CudaTensor const &other, value_type scalar );
+
+		CudaTensor &elementwiseMultiplyInPlace( CudaTensor const &other );
+		/// Elementwise product of \c *this and \p other into \p out; replaces \p out if shape differs.
+		void elementwiseMultiply( CudaTensor const &other, CudaTensor &out ) const;
+		CudaTensor &mulNSubstractInPlace( CudaTensor const &other, value_type scalar );
 
 	CudaTensor divideRowsWithCol( CudaTensor const &other ) const;
 		CudaTensor &divideRowsWithColInPlace( CudaTensor const &other );
@@ -145,14 +148,23 @@ class CudaTensor
 
 		template <typename Generator>
 		void randomize( Generator &generator ) noexcept;
-		void randomize() noexcept;
-		void randomizeHe( std::size_t fan_in ) noexcept;
+		/// Seeded uniform \f$[0, 1)\f$; uses the \c cuda_random_uniform_float fast path for
+		/// \c float. Deterministic given \p seed.
+		void randomize( std::uint64_t seed ) noexcept;
+		void randomizeHe( std::size_t fan_in, std::uint64_t seed ) noexcept;
+		/// Matches PyTorch \c nn.Linear / \c nn.Conv2d \c reset_parameters (see \c Tensor::randomizePytorchDefault).
+		void randomizePytorchDefault( std::size_t fan_in, std::uint64_t seed ) noexcept;
 
 		void copyToHost( T *host ) const;
 	private:
 		std::size_t m_rows = 0;
 		std::size_t m_cols = 0;
 		T *m_data_handle = nullptr;
+};
+
+template <typename U>
+struct is_cuda_tensor<CudaTensor<U>> : std::true_type
+{
 };
 
 template <typename T>
@@ -840,6 +852,44 @@ CudaTensor<T> &CudaTensor<T>::elementwiseMultiplyInPlace( CudaTensor const &othe
 #endif
 	} else {
 		throw std::invalid_argument( "CudaTensor::elementwiseMultiplyInPlace(): unsupported type" );
+	}
+}
+
+template <typename T>
+void CudaTensor<T>::elementwiseMultiply( CudaTensor const &other, CudaTensor &out ) const
+{
+	if ( m_rows != other.m_rows || m_cols != other.m_cols ) {
+		throw std::invalid_argument(
+		    "CudaTensor::elementwiseMultiply(): incompatible dimensions" );
+	}
+	if ( out.m_rows != m_rows || out.m_cols != m_cols ) {
+		out = CudaTensor<T>( m_rows, m_cols );
+	}
+	if ( size() == 0 ) {
+		return;
+	}
+	if ( m_data_handle == nullptr || other.m_data_handle == nullptr
+	     || out.m_data_handle == nullptr ) {
+		throw std::runtime_error( "CudaTensor::elementwiseMultiply(): tensor not initialized" );
+	}
+	if constexpr ( std::is_same_v<T, float> ) {
+		cudaError_t const err =
+		    cuda_mul_float( m_data_handle, other.m_data_handle, out.m_data_handle, size() );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error(
+			    "CudaTensor::elementwiseMultiply(): cuda_mul_float failed" );
+		}
+#if NEURAL_CUDA_ENABLED
+	} else if constexpr ( std::is_same_v<T, fp8> ) {
+		cudaError_t const err =
+		    cuda_mul_fp8( m_data_handle, other.m_data_handle, out.m_data_handle, size() );
+		if ( err != cudaSuccess ) {
+			throw std::runtime_error(
+			    "CudaTensor::elementwiseMultiply(): cuda_mul_fp8 failed" );
+		}
+#endif
+	} else {
+		throw std::invalid_argument( "CudaTensor::elementwiseMultiply(): unsupported type" );
 	}
 }
 
@@ -1837,25 +1887,64 @@ void CudaTensor<T>::randomize( Generator &generator ) noexcept
 }
 
 template <typename T>
-void CudaTensor<T>::randomize() noexcept
+void CudaTensor<T>::randomize( std::uint64_t seed ) noexcept
 {
-	std::random_device rd;
-	std::mt19937 gen( rd() );
+	if ( m_data_handle == nullptr || size() == 0 ) {
+		return;
+	}
+	if constexpr ( std::is_same_v<T, float> ) {
+		(void)cuda_random_uniform_float( m_data_handle, size(),
+		                                 static_cast<unsigned long long>( seed ) );
+		return;
+	}
+	std::mt19937_64 gen( seed );
 	std::uniform_real_distribution<double> dis( 0.0, 1.0 );
 	auto generator = [&]() { return static_cast<T>( dis( gen ) ); };
 	randomize( generator );
 }
 
 template <typename T>
-void CudaTensor<T>::randomizeHe( std::size_t fan_in ) noexcept
+void CudaTensor<T>::randomizeHe( std::size_t fan_in, std::uint64_t seed ) noexcept
 {
 	if ( fan_in == 0 ) {
 		return;
 	}
+	if ( m_data_handle == nullptr || size() == 0 ) {
+		return;
+	}
+	if constexpr ( std::is_same_v<T, float> ) {
+		double const scale = std::sqrt( 2.0 / static_cast<double>( fan_in ) );
+		(void)cuda_random_uniform_symmetric_float(
+		    m_data_handle, size(), static_cast<float>( scale ),
+		    static_cast<unsigned long long>( seed ) );
+		return;
+	}
 	double const scale = std::sqrt( 2.0 / static_cast<double>( fan_in ) );
-	std::random_device rd;
-	std::mt19937 gen( rd() );
+	std::mt19937_64 gen( seed );
 	std::uniform_real_distribution<double> dis( -scale, scale );
+	auto generator = [&]() { return static_cast<T>( dis( gen ) ); };
+	randomize( generator );
+}
+
+template <typename T>
+void CudaTensor<T>::randomizePytorchDefault( std::size_t fan_in, std::uint64_t seed ) noexcept
+{
+	if ( fan_in == 0 ) {
+		return;
+	}
+	if ( m_data_handle == nullptr || size() == 0 ) {
+		return;
+	}
+	if constexpr ( std::is_same_v<T, float> ) {
+		float const half_width =
+		    static_cast<float>( 1.0 / std::sqrt( static_cast<double>( fan_in ) ) );
+		(void)cuda_random_uniform_symmetric_float(
+		    m_data_handle, size(), half_width, static_cast<unsigned long long>( seed ) );
+		return;
+	}
+	double const half_width = 1.0 / std::sqrt( static_cast<double>( fan_in ) );
+	std::mt19937_64 gen( seed );
+	std::uniform_real_distribution<double> dis( -half_width, half_width );
 	auto generator = [&]() { return static_cast<T>( dis( gen ) ); };
 	randomize( generator );
 }

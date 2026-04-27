@@ -4,6 +4,11 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#if NEURAL_CUDA_ENABLED
+#include "cuda_tensor.hpp"
+#include "cuda_tensor_n.hpp"
+#include "neural_cuda_layer_sync.hpp"
+#endif
 
 namespace neural {
 
@@ -60,6 +65,11 @@ Tensor2D_t *FlattenLayer<TensorN_t, Tensor2D_t>::forward()
 	std::memcpy( m_output->data(), m_input->data(),
 	             m_input->size() * sizeof( typename TensorN_t::value_type ) );
 
+#if NEURAL_CUDA_ENABLED
+	if constexpr ( is_cuda_tensor_v<Tensor2D_t> || is_cuda_tensor4_v<TensorN_t> ) {
+		cuda_layer_sync();
+	}
+#endif
 	return m_output;
 }
 
@@ -73,6 +83,11 @@ TensorN_t *FlattenLayer<TensorN_t, Tensor2D_t>::backward()
 	std::memcpy( m_grad_output->data(), m_grad_input->data(),
 	             m_grad_input->size() * sizeof( typename Tensor2D_t::value_type ) );
 
+#if NEURAL_CUDA_ENABLED
+	if constexpr ( is_cuda_tensor_v<Tensor2D_t> || is_cuda_tensor4_v<TensorN_t> ) {
+		cuda_layer_sync();
+	}
+#endif
 	return m_grad_output;
 }
 

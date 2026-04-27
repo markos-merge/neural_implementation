@@ -138,6 +138,12 @@ cudaError_t cuda_bn_running_var_from_saved_inv_std_float( float *running_var,
 /// Writes \p saved_inv as \c rsqrtf(var[i] + eps) (inverse std dev for cuDNN backward).
 cudaError_t cuda_bn_saved_inv_std_from_variance_float( float *saved_inv, float const *var,
                                                        std::size_t channels, float eps );
+
+/// Fills \p dev with uniform floats in \f$[0,1)\f$ (cuRAND). \p seed reseeds the generator.
+cudaError_t cuda_random_uniform_float( float *dev, std::size_t count, unsigned long long seed );
+/// Uniform on \f$[-\texttt{half\_width}, \texttt{half\_width})\f$ (matches symmetric uniform He-style init).
+cudaError_t cuda_random_uniform_symmetric_float( float *dev, std::size_t count, float half_width,
+                                                 unsigned long long seed );
 } // namespace neural
 
 #endif

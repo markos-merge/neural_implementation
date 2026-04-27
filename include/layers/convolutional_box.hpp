@@ -8,8 +8,14 @@
 #include "batch_norm_layer.hpp"
 #include "convolutional_layer.hpp"
 #include "layer_base.hpp"
+#include "dropout_layer.hpp"
 #include "max_pool_layer.hpp"
 #include "relu_layer.hpp"
+#if NEURAL_CUDA_ENABLED
+#include "cuda_tensor.hpp"
+#include "cuda_tensor_n.hpp"
+#include "neural_cuda_layer_sync.hpp"
+#endif
 
 namespace neural {
 
@@ -19,7 +25,13 @@ template < typename TensorN_t >
 std::array<std::size_t, 4> infer_shape_after( std::array<std::size_t, 4> s,
                                               ConvolutionalLayer<TensorN_t> const &L )
 {
-	std::size_t const k   = L.kernelSize();
+	std::size_t const k = L.kernelSize();
+#if NEURAL_CUDNN_ENABLED
+	// CudaTensor4::im2ColConvolution uses fixed padding 1,1 in cuDNN (stride 1) → H_out = H - k + 3.
+	if constexpr ( is_cuda_tensor4_v<TensorN_t> ) {
+		return { s[0], L.outChannels(), s[2] + 3 - k, s[3] + 3 - k };
+	}
+#endif
 	std::size_t const pad = k / 2;
 	return { s[0], L.outChannels(), s[2] - 2 * pad, s[3] - 2 * pad };
 }
@@ -27,6 +39,13 @@ std::array<std::size_t, 4> infer_shape_after( std::array<std::size_t, 4> s,
 template < typename TensorN_t >
 std::array<std::size_t, 4> infer_shape_after( std::array<std::size_t, 4> s,
                                               ReLULayer<TensorN_t> const & )
+{
+	return s;
+}
+
+template < typename TensorN_t >
+std::array<std::size_t, 4> infer_shape_after( std::array<std::size_t, 4> s,
+                                              DropoutLayer<TensorN_t> const & )
 {
 	return s;
 }
@@ -81,7 +100,6 @@ class ConvolutionalBox : public LayerBase<Tensor2D_t>
 		ConvolutionalBox &operator=( ConvolutionalBox &&other ) noexcept;
 
 		void initialize();
-		void applyUpdate( value_type learning_rate );
 
 		Tensor2D_t *forward();
 		Tensor2D_t *backward();
@@ -90,6 +108,9 @@ class ConvolutionalBox : public LayerBase<Tensor2D_t>
 
 		template <typename UnaryOp>
 		void forEachLayer( UnaryOp &&op );
+
+		/// For train vs eval: forward to batch norm / dropout and any other layer that supports it.
+		void setTraining( bool training );
 
 		/// Zip each inner layer with the matching element of \p zip_tuple (same arity as inner \c Layers...).
 		template <typename Tuple, typename F>
@@ -212,8 +233,8 @@ void ConvolutionalBox<TensorN_t, Tensor2D_t, Layers...>::wire_layers()
 template <typename TensorN_t, typename Tensor2D_t, typename... Layers>
 void ConvolutionalBox<TensorN_t, Tensor2D_t, Layers...>::ensure_buffers( std::size_t batch_size )
 {
-	if ( batch_size == m_cached_batch_size )
-		return;
+	// if ( batch_size == m_cached_batch_size )
+	// 	return; 
 	m_fwd_slots[0] = TensorN_t( { batch_size, m_channels, m_height, m_width } );
 	m_cached_batch_size = batch_size;
 }
@@ -226,39 +247,6 @@ void ConvolutionalBox<TensorN_t, Tensor2D_t, Layers...>::initialize()
 		    ( ..., ( [&lyr]() {
 			    if constexpr ( requires { lyr.initialize(); } ) {
 				    lyr.initialize();
-			    }
-		    }() ) );
-	    },
-	    m_layers );
-}
-
-template <typename TensorN_t, typename Tensor2D_t, typename... Layers>
-void ConvolutionalBox<TensorN_t, Tensor2D_t, Layers...>::applyUpdate( value_type learning_rate )
-{
-	std::apply(
-	    [learning_rate]( auto &...lyr ) {
-		    ( ..., ( [&lyr, learning_rate]() {
-			    if constexpr ( requires {
-				    lyr.getWeights();
-				    lyr.getBias();
-				    lyr.getGradWeights();
-				    lyr.getGradBias();
-			    } ) {
-				    auto &w        = lyr.getWeights();
-				    auto const &gw = lyr.getGradWeights();
-					#ifdef _OPENMP
-					#pragma omp parallel for schedule( static )
-					#endif
-				    for ( std::size_t i = 0; i < w.size(); ++i )
-					    w.data()[i] -= gw.data()[i] * learning_rate;
-
-				    auto &b        = lyr.getBias();
-				    auto const &gb = lyr.getGradBias();
-					#ifdef _OPENMP
-					#pragma omp parallel for schedule( static )
-					#endif
-				    for ( std::size_t i = 0; i < b.size(); ++i )
-					    b.data()[i] -= gb.data()[i] * learning_rate;
 			    }
 		    }() ) );
 	    },
@@ -283,6 +271,11 @@ Tensor2D_t *ConvolutionalBox<TensorN_t, Tensor2D_t, Layers...>::forward()
 	}
 	output->assign( last.data(), last.size() );
 
+#if NEURAL_CUDA_ENABLED
+	if constexpr ( is_cuda_tensor_v<Tensor2D_t> || is_cuda_tensor4_v<TensorN_t> ) {
+		cuda_layer_sync();
+	}
+#endif
 	return output;
 }
 
@@ -313,6 +306,11 @@ Tensor2D_t *ConvolutionalBox<TensorN_t, Tensor2D_t, Layers...>::backward()
 	}
 	grad_output->assign( first_bwd.data(), first_bwd.size() );
 
+#if NEURAL_CUDA_ENABLED
+	if constexpr ( is_cuda_tensor_v<Tensor2D_t> || is_cuda_tensor4_v<TensorN_t> ) {
+		cuda_layer_sync();
+	}
+#endif
 	return grad_output;
 }
 
@@ -321,6 +319,16 @@ template <typename UnaryOp>
 void ConvolutionalBox<TensorN_t, Tensor2D_t, Layers...>::forEachLayer( UnaryOp &&op )
 {
 	std::apply( [&op]( auto &...lyr ) { ( op( lyr ), ... ); }, m_layers );
+}
+
+template <typename TensorN_t, typename Tensor2D_t, typename... Layers>
+void ConvolutionalBox<TensorN_t, Tensor2D_t, Layers...>::setTraining( bool training )
+{
+	forEachLayer( [training]( auto &lyr ) {
+		if constexpr ( requires { lyr.setTraining( training ); } ) {
+			lyr.setTraining( training );
+		}
+	} );
 }
 
 template <typename TensorN_t, typename Tensor2D_t, typename... Layers>

@@ -4,9 +4,31 @@
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <cuda_fp8.h>
+#include <curand.h>
 #include <algorithm>
 #include <cmath>
 #include <device_types.h>
+#include <mutex>
+#include <atomic>
+#include <cstdio>
+
+namespace {
+std::atomic<bool> g_cuda_post_kernel_synchronize{ false };
+struct CudaOpSyncGuard
+{
+	~CudaOpSyncGuard()
+	{
+		if ( !g_cuda_post_kernel_synchronize.load( std::memory_order_relaxed ) ) {
+			return;
+		}
+		(void)cudaGetLastError();
+		cudaError_t const e = cudaDeviceSynchronize();
+		if ( e != cudaSuccess ) {
+			std::fprintf( stderr, "neural: cudaDeviceSynchronize (post-kernel): %s\n", cudaGetErrorString( e ) );
+		}
+	}
+};
+} // namespace
 
 namespace neural {
 
@@ -564,6 +586,7 @@ __global__ void argmax_axis1_fp8_kernel( fp8 const *in, unsigned int *out, unsig
 
 cudaError_t cuda_fill_float( float *dev, std::size_t count, float value )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( count == 0 || dev == nullptr ) {
 		return cudaSuccess;
 	}
@@ -583,6 +606,7 @@ cudaError_t cuda_fill_float( float *dev, std::size_t count, float value )
 
 cudaError_t cuda_fill_fp8( fp8 *dev, std::size_t count, fp8 value )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( count == 0 || dev == nullptr ) {
 		return cudaSuccess;
 	}
@@ -598,6 +622,107 @@ cudaError_t cuda_fill_fp8( fp8 *dev, std::size_t count, fp8 value )
 
 	// return cudaDeviceSynchronize();
 	return cudaSuccess;
+}
+
+__global__ void uniform_symmetric_inplace_kernel( float *x, unsigned long long n, float half_width )
+{
+	unsigned long long const idx = static_cast<unsigned long long>( blockIdx.x ) * blockDim.x
+	                             + threadIdx.x;
+	unsigned long long const stride = static_cast<unsigned long long>( blockDim.x ) * gridDim.x;
+	float const scale = 2.f * half_width;
+	for ( unsigned long long i = idx; i < n; i += stride ) {
+		x[i] = x[i] * scale - half_width;
+	}
+}
+
+namespace detail {
+
+std::mutex g_curand_mutex;
+curandGenerator_t g_curand_generator = nullptr;
+
+cudaError_t curand_generate_uniform_chunks( curandGenerator_t gen, float *dev, std::size_t count )
+{
+	CudaOpSyncGuard const _cuda_op_sync;
+	constexpr std::size_t kMaxChunk = static_cast<std::size_t>( 1 ) << 28;
+	for ( std::size_t off = 0; off < count; off += kMaxChunk ) {
+		std::size_t const chunk = std::min( kMaxChunk, count - off );
+		curandStatus_t const st = curandGenerateUniform( gen, dev + off, chunk );
+		if ( st != CURAND_STATUS_SUCCESS ) {
+			return cudaErrorUnknown;
+		}
+	}
+	return cudaSuccess;
+}
+
+/// Pre: \c g_curand_mutex held, generator created.
+/// Reseeds and resets the absolute offset so the same \p seed always starts the same stream;
+/// without the offset reset the singleton generator's offset persists across calls and the
+/// "same seed → same output" contract breaks for callers like \c DropoutLayer.
+cudaError_t cuda_random_uniform_float_unlocked( float *dev, std::size_t count, unsigned long long seed )
+{
+	CudaOpSyncGuard const _cuda_op_sync;
+	curandStatus_t st = curandSetPseudoRandomGeneratorSeed( g_curand_generator, seed );
+	if ( st != CURAND_STATUS_SUCCESS ) {
+		return cudaErrorUnknown;
+	}
+	st = curandSetGeneratorOffset( g_curand_generator, 0ULL );
+	if ( st != CURAND_STATUS_SUCCESS ) {
+		return cudaErrorUnknown;
+	}
+	return curand_generate_uniform_chunks( g_curand_generator, dev, count );
+}
+
+} // namespace detail
+
+cudaError_t cuda_random_uniform_float( float *dev, std::size_t count, unsigned long long seed )
+{
+	CudaOpSyncGuard const _cuda_op_sync;
+	if ( count == 0 ) {
+		return cudaSuccess;
+	}
+	if ( dev == nullptr ) {
+		return cudaErrorInvalidValue;
+	}
+	std::lock_guard<std::mutex> lock( detail::g_curand_mutex );
+	if ( detail::g_curand_generator == nullptr ) {
+		curandStatus_t const cr =
+		    curandCreateGenerator( &detail::g_curand_generator, CURAND_RNG_PSEUDO_PHILOX4_32_10 );
+		if ( cr != CURAND_STATUS_SUCCESS ) {
+			return cudaErrorInitializationError;
+		}
+	}
+	return detail::cuda_random_uniform_float_unlocked( dev, count, seed );
+}
+
+cudaError_t cuda_random_uniform_symmetric_float( float *dev, std::size_t count, float half_width,
+                                                 unsigned long long seed )
+{
+	CudaOpSyncGuard const _cuda_op_sync;
+	if ( count == 0 ) {
+		return cudaSuccess;
+	}
+	if ( dev == nullptr ) {
+		return cudaErrorInvalidValue;
+	}
+	std::lock_guard<std::mutex> lock( detail::g_curand_mutex );
+	if ( detail::g_curand_generator == nullptr ) {
+		curandStatus_t const cr =
+		    curandCreateGenerator( &detail::g_curand_generator, CURAND_RNG_PSEUDO_PHILOX4_32_10 );
+		if ( cr != CURAND_STATUS_SUCCESS ) {
+			return cudaErrorInitializationError;
+		}
+	}
+	cudaError_t err = detail::cuda_random_uniform_float_unlocked( dev, count, seed );
+	if ( err != cudaSuccess ) {
+		return err;
+	}
+	int const threads = 256;
+	int const blocks = static_cast<int>( ( count + static_cast<std::size_t>( threads ) - 1 )
+	                                   / static_cast<std::size_t>( threads ) );
+	uniform_symmetric_inplace_kernel<<<blocks, threads>>>(
+	    dev, static_cast<unsigned long long>( count ), half_width );
+	err = cudaGetLastError();
+	return err;
 }
 
 __global__ void transpose_float_kernel( float const *in, float *out, unsigned long long rows,
@@ -659,6 +784,7 @@ cudaError_t cuda_gather_rows_float( float const *src, float *dst, std::size_t sr
                                     int const *indices_host, std::size_t row_indices_src,
                                     std::size_t row_indices_size )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	(void)src_rows;
 	if ( row_indices_size == 0u || cols == 0u ) {
 		return cudaSuccess;
@@ -704,6 +830,7 @@ cudaError_t cuda_gather_rows_fp8( fp8 const *src, fp8 *dst, std::size_t src_rows
                                   int const *indices_host, std::size_t row_indices_src,
                                   std::size_t row_indices_size )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	(void)src_rows;
 	if ( row_indices_size == 0u || cols == 0u ) {
 		return cudaSuccess;
@@ -746,6 +873,7 @@ cudaError_t cuda_gather_rows_fp8( fp8 const *src, fp8 *dst, std::size_t src_rows
 
 cudaError_t cuda_transpose_float( float const *in, float *out, std::size_t rows, std::size_t cols )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( rows == 0 || cols == 0 ) {
 		return cudaSuccess;
 	}
@@ -763,6 +891,7 @@ cudaError_t cuda_transpose_float( float const *in, float *out, std::size_t rows,
 
 cudaError_t cuda_transpose_fp8( fp8 const *in, fp8 *out, std::size_t rows, std::size_t cols )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( rows == 0 || cols == 0 ) {
 		return cudaSuccess;
 	}
@@ -780,6 +909,7 @@ cudaError_t cuda_transpose_fp8( fp8 const *in, fp8 *out, std::size_t rows, std::
 
 cudaError_t cuda_matmul_fp8( fp8 *dev, fp8 *other, fp8 *result, std::size_t rows, std::size_t cols, std::size_t other_rows, std::size_t other_cols )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( rows == 0 || cols == 0 || other_rows == 0 || other_cols == 0 ) {
 		return cudaSuccess;
 	}
@@ -792,6 +922,7 @@ cudaError_t cuda_matmul_fp8( fp8 *dev, fp8 *other, fp8 *result, std::size_t rows
 
 cudaError_t cuda_matmul_inplace_fp8( fp8 *dev, fp8 *other, std::size_t rows, std::size_t cols, std::size_t other_rows, std::size_t other_cols )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( rows == 0 || cols == 0 || other_rows == 0 || other_cols == 0 ) {
 		return cudaSuccess;
 	}
@@ -805,6 +936,7 @@ cudaError_t cuda_matmul_inplace_fp8( fp8 *dev, fp8 *other, std::size_t rows, std
 
 cudaError_t divide_rows_with_col_float( float *dev, float *other, std::size_t rows, std::size_t cols )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( rows == 0 || cols == 0 ) {
 		return cudaSuccess;
 	}
@@ -817,6 +949,7 @@ cudaError_t divide_rows_with_col_float( float *dev, float *other, std::size_t ro
 
 cudaError_t divide_rows_with_col_fp8( fp8 *dev, fp8 *other, std::size_t rows, std::size_t cols )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( rows == 0 || cols == 0 ) {
 		return cudaSuccess;
 	}
@@ -832,6 +965,7 @@ cudaError_t divide_rows_with_col_fp8( fp8 *dev, fp8 *other, std::size_t rows, st
 
 cudaError_t cuda_max_abs_float( float const *dev, std::size_t count, float *out_host )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( out_host == nullptr ) {
 		return cudaErrorInvalidValue;
 	}
@@ -862,6 +996,7 @@ cudaError_t cuda_max_abs_float( float const *dev, std::size_t count, float *out_
 
 cudaError_t cuda_max_abs_fp8( fp8 const *dev, std::size_t count, float *out_host )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( out_host == nullptr ) {
 		return cudaErrorInvalidValue;
 	}
@@ -907,6 +1042,7 @@ cudaError_t cuda_max_abs_fp8( fp8 const *dev, std::size_t count, float *out_host
 cudaError_t cuda_add_fp8( fp8 const *a, fp8 const *b, fp8 *out, std::size_t count, float alpha,
                            float beta )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( count == 0 ) {
 		return cudaSuccess;
 	}
@@ -929,6 +1065,7 @@ cudaError_t cuda_add_fp8( fp8 const *a, fp8 const *b, fp8 *out, std::size_t coun
 cudaError_t cuda_add_colwise_float( float *dev, float const *col_vec, std::size_t rows, std::size_t cols,
                                     float alpha )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( rows == 0 || cols == 0 ) {
 		return cudaSuccess;
 	}
@@ -947,6 +1084,7 @@ cudaError_t cuda_add_colwise_float( float *dev, float const *col_vec, std::size_
 cudaError_t cuda_add_colwise_fp8( fp8 *dev, fp8 const *col_vec, std::size_t rows, std::size_t cols,
                                   float alpha )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( rows == 0 || cols == 0 ) {
 		return cudaSuccess;
 	}
@@ -964,6 +1102,7 @@ cudaError_t cuda_add_colwise_fp8( fp8 *dev, fp8 const *col_vec, std::size_t rows
 cudaError_t cuda_add_rowwise_float( float *dev, float const *row_vec, std::size_t rows, std::size_t cols,
                                     float alpha )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( rows == 0 || cols == 0 ) {
 		return cudaSuccess;
 	}
@@ -983,6 +1122,7 @@ cudaError_t cuda_add_rowwise_float( float *dev, float const *row_vec, std::size_
 cudaError_t cuda_add_rowwise_fp8( fp8 *dev, fp8 const *row_vec, std::size_t rows, std::size_t cols,
                                   float alpha )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( rows == 0 || cols == 0 ) {
 		return cudaSuccess;
 	}
@@ -1002,6 +1142,7 @@ cudaError_t cuda_add_rowwise_fp8( fp8 *dev, fp8 const *row_vec, std::size_t rows
 cudaError_t cuda_bn_running_var_from_saved_inv_std_float( float *running_var, float const *saved_inv_std,
                                                           std::size_t channels, float eps )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( channels == 0u ) {
 		return cudaSuccess;
 	}
@@ -1023,6 +1164,7 @@ cudaError_t cuda_bn_running_var_from_saved_inv_std_float( float *running_var, fl
 cudaError_t cuda_bn_saved_inv_std_from_variance_float( float *saved_inv, float const *var,
                                                        std::size_t channels, float eps )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( channels == 0u ) {
 		return cudaSuccess;
 	}
@@ -1043,6 +1185,7 @@ cudaError_t cuda_bn_saved_inv_std_from_variance_float( float *saved_inv, float c
 
 cudaError_t cuda_mul_float( float const *a, float const *b, float *out, std::size_t count )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( count == 0 ) {
 		return cudaSuccess;
 	}
@@ -1063,6 +1206,7 @@ cudaError_t cuda_mul_float( float const *a, float const *b, float *out, std::siz
 
 cudaError_t cuda_mul_float_inplace( float *a, float const *b, std::size_t count )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( count == 0 ) {
 		return cudaSuccess;
 	}
@@ -1083,6 +1227,7 @@ cudaError_t cuda_mul_float_inplace( float *a, float const *b, std::size_t count 
 
 cudaError_t cuda_mul_fp8( fp8 const *a, fp8 const *b, fp8 *out, std::size_t count )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( count == 0 ) {
 		return cudaSuccess;
 	}
@@ -1102,6 +1247,7 @@ cudaError_t cuda_mul_fp8( fp8 const *a, fp8 const *b, fp8 *out, std::size_t coun
 
 cudaError_t cuda_mul_fp8_inplace( fp8 *a, fp8 const *b, std::size_t count )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( count == 0 ) {
 		return cudaSuccess;
 	}
@@ -1122,6 +1268,7 @@ cudaError_t cuda_mul_fp8_inplace( fp8 *a, fp8 const *b, std::size_t count )
 
 cudaError_t cuda_scale_float( float *dev, std::size_t count, float alpha )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( count == 0 ) {
 		return cudaSuccess;
 	}
@@ -1139,6 +1286,7 @@ cudaError_t cuda_scale_float( float *dev, std::size_t count, float alpha )
 
 cudaError_t cuda_scale_fp8( fp8 *dev, std::size_t count, float alpha )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( count == 0 ) {
 		return cudaSuccess;
 	}
@@ -1159,6 +1307,7 @@ cudaError_t cuda_scale_fp8( fp8 *dev, std::size_t count, float alpha )
 
 cudaError_t cuda_sum_float( float const *in, std::size_t n, float *out_host )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( out_host == nullptr ) {
 		return cudaErrorInvalidValue;
 	}
@@ -1199,6 +1348,7 @@ cudaError_t cuda_sum_float( float const *in, std::size_t n, float *out_host )
 
 cudaError_t cuda_sum_fp8( fp8 const *in, std::size_t n, float *out_host )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( out_host == nullptr ) {
 		return cudaErrorInvalidValue;
 	}
@@ -1239,6 +1389,7 @@ cudaError_t cuda_sum_fp8( fp8 const *in, std::size_t n, float *out_host )
 
 cudaError_t cuda_cwise_greater_float( float const *in, float *out, std::size_t n, float scalar )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( n == 0 ) {
 		return cudaSuccess;
 	}
@@ -1260,6 +1411,7 @@ cudaError_t cuda_cwise_greater_float( float const *in, float *out, std::size_t n
 
 cudaError_t cuda_cwise_greater_fp8( fp8 const *in, fp8 *out, std::size_t n, float scalar )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( n == 0 ) {
 		return cudaSuccess;
 	}
@@ -1281,6 +1433,7 @@ cudaError_t cuda_cwise_greater_fp8( fp8 const *in, fp8 *out, std::size_t n, floa
 
 cudaError_t cuda_cwise_one_minus_float( float const *in, float *out, std::size_t n )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( n == 0 ) {
 		return cudaSuccess;
 	}
@@ -1301,6 +1454,7 @@ cudaError_t cuda_cwise_one_minus_float( float const *in, float *out, std::size_t
 
 cudaError_t cuda_cwise_one_minus_fp8( fp8 const *in, fp8 *out, std::size_t n )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( n == 0 ) {
 		return cudaSuccess;
 	}
@@ -1321,6 +1475,7 @@ cudaError_t cuda_cwise_one_minus_fp8( fp8 const *in, fp8 *out, std::size_t n )
 
 cudaError_t cuda_cwise_sigmoid_float( float const *in, float *out, std::size_t n )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( n == 0 ) {
 		return cudaSuccess;
 	}
@@ -1341,6 +1496,7 @@ cudaError_t cuda_cwise_sigmoid_float( float const *in, float *out, std::size_t n
 
 cudaError_t cuda_cwise_sigmoid_fp8( fp8 const *in, fp8 *out, std::size_t n )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( n == 0 ) {
 		return cudaSuccess;
 	}
@@ -1361,6 +1517,7 @@ cudaError_t cuda_cwise_sigmoid_fp8( fp8 const *in, fp8 *out, std::size_t n )
 
 cudaError_t cuda_cwise_exp_float( float const *in, float *out, std::size_t n )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( n == 0 ) {
 		return cudaSuccess;
 	}
@@ -1380,6 +1537,7 @@ cudaError_t cuda_cwise_exp_float( float const *in, float *out, std::size_t n )
 
 cudaError_t cuda_cwise_exp_fp8( fp8 const *in, fp8 *out, std::size_t n )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( n == 0 ) {
 		return cudaSuccess;
 	}
@@ -1400,6 +1558,7 @@ cudaError_t cuda_cwise_exp_fp8( fp8 const *in, fp8 *out, std::size_t n )
 
 cudaError_t cuda_cwise_log_float( float const *in, float *out, std::size_t n )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( n == 0 ) {
 		return cudaSuccess;
 	}
@@ -1420,6 +1579,7 @@ cudaError_t cuda_cwise_log_float( float const *in, float *out, std::size_t n )
 
 cudaError_t cuda_cwise_log_fp8( fp8 const *in, fp8 *out, std::size_t n )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( n == 0 ) {
 		return cudaSuccess;
 	}
@@ -1441,6 +1601,7 @@ cudaError_t cuda_cwise_log_fp8( fp8 const *in, fp8 *out, std::size_t n )
 cudaError_t cuda_sum_along_axis_float( float const *in, float *out, std::size_t rows, std::size_t cols,
                                        int axis, bool transpose_out )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	(void)transpose_out;
 	if ( in == nullptr || out == nullptr ) {
 		return cudaErrorInvalidValue;
@@ -1476,6 +1637,7 @@ cudaError_t cuda_sum_along_axis_float( float const *in, float *out, std::size_t 
 cudaError_t cuda_sum_along_axis_fp8( fp8 const *in, fp8 *out, std::size_t rows, std::size_t cols,
                                      int axis, bool transpose_out )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	(void)transpose_out;
 	if ( in == nullptr || out == nullptr ) {
 		return cudaErrorInvalidValue;
@@ -1511,6 +1673,7 @@ cudaError_t cuda_sum_along_axis_fp8( fp8 const *in, fp8 *out, std::size_t rows, 
 cudaError_t cuda_max_along_axis_float( float const *in, float *out, std::size_t rows, std::size_t cols,
                                        int axis )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( in == nullptr || out == nullptr ) {
 		return cudaErrorInvalidValue;
 	}
@@ -1545,6 +1708,7 @@ cudaError_t cuda_max_along_axis_float( float const *in, float *out, std::size_t 
 cudaError_t cuda_max_along_axis_fp8( fp8 const *in, fp8 *out, std::size_t rows, std::size_t cols,
                                      int axis )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( in == nullptr || out == nullptr ) {
 		return cudaErrorInvalidValue;
 	}
@@ -1579,6 +1743,7 @@ cudaError_t cuda_max_along_axis_fp8( fp8 const *in, fp8 *out, std::size_t rows, 
 cudaError_t cuda_argmax_along_axis_float( float const *in, unsigned int *out, std::size_t rows,
                                           std::size_t cols, int axis )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( in == nullptr || out == nullptr ) {
 		return cudaErrorInvalidValue;
 	}
@@ -1612,6 +1777,7 @@ cudaError_t cuda_argmax_along_axis_float( float const *in, unsigned int *out, st
 cudaError_t cuda_argmax_along_axis_fp8( fp8 const *in, unsigned int *out, std::size_t rows,
                                         std::size_t cols, int axis )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( in == nullptr || out == nullptr ) {
 		return cudaErrorInvalidValue;
 	}
@@ -1655,6 +1821,7 @@ __global__ void mul_substract_float_kernel( float *data, float const *other,
 cudaError_t cuda_mul_substract_float( float *data, float const *other, std::size_t count,
                                       float scalar )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( data == nullptr || other == nullptr || count == 0 ) {
 		return cudaSuccess;
 	}
@@ -1729,6 +1896,7 @@ __global__ void add_elementwise_fp8_kernel( fp8 *in, fp8 *out, unsigned long lon
 
 cudaError_t cuda_add_elementwise( float *in, float *out, std::size_t n, float value )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( n == 0 ) {
 		return cudaSuccess;
 	}
@@ -1746,6 +1914,7 @@ cudaError_t cuda_add_elementwise( float *in, float *out, std::size_t n, float va
 
 cudaError_t cuda_add_elementwise( fp8 *in, fp8 *out, std::size_t n, fp8 value )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( n == 0 ) {
 		return cudaSuccess;
 	}
@@ -1804,6 +1973,7 @@ __global__ void reduce_sum_to_dim_float_kernel( float *in, float *out,
 cudaError_t cuda_reduce_sum_to_dim( float *in, float *out, std::size_t prefix, std::size_t mid,
                                     std::size_t suffix )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( in == nullptr || out == nullptr ) {
 		return cudaErrorInvalidValue;
 	}
@@ -1848,6 +2018,7 @@ __global__ void reduce_sum_to_dim_axis_0_float_kernel( float *in, float *out,
 
 cudaError_t cuda_reduce_sum_to_dim_axis_0( float *in, float *out, std::size_t n, std::size_t stride )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( in == nullptr || out == nullptr ) {
 		return cudaErrorInvalidValue;
 	}
@@ -1894,6 +2065,7 @@ __global__ void swap_axes_float_kernel( float *in, float *out, unsigned long lon
 
 cudaError_t cuda_swap_axes( float *in, float *out, std::size_t n, std::size_t *strides, std::size_t *new_strides, std::size_t rank, const std::size_t *new_axes )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	//todo: this can be done better if a thread could use more than one matrix
 	if ( in == nullptr || out == nullptr ) {
 		return cudaErrorInvalidValue;
@@ -1918,6 +2090,7 @@ cudaError_t cuda_swap_axes( float *in, float *out, std::size_t n, std::size_t *s
 cudaError_t cuda_col2im_float( float const *col, float *im, int N, int C_in, int H, int W,
                                int Kh, int Kw )
 {
+	CudaOpSyncGuard const _cuda_op_sync;
 	if ( col == nullptr || im == nullptr ) {
 		return cudaSuccess;
 	}

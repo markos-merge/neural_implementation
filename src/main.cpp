@@ -1,5 +1,7 @@
 #include "cifar_demo.hpp"
+#include "conv_demo_cpu_small.hpp"
 #include "conv_demo_cuda.hpp"
+#include "conv_demo_cuda_small.hpp"
 #include "conv_demo_momentum.hpp"
 #include "mnist_demo.hpp"
 #include <iostream>
@@ -16,6 +18,8 @@ int main()
 	// run_cifar10_demo();
 	// run_conv_demo();
 	// run_conv_demo_momentum();
-	run_conv_demo_cuda();
+	// run_conv_demo_cpu_small(); // TensorN im2col (CPU); see header for vs. CUDA geometry
+	run_conv_demo_cuda_small();
+	// run_conv_demo_cuda();
 	return 0;
 }

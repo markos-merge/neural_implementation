@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <cmath>
 #include <limits>
 #include <vector>
@@ -65,6 +66,8 @@ class TensorN
 	
 		TensorN &operator*=( TensorN const &other );
 		TensorN &operator*=( value_type scalar );
+		/// \p out = \c *this ⊙ \p other; resizes \p out if needed (same as \c Tensor::elementwiseMultiply).
+		void elementwiseMultiply( TensorN const &other, TensorN &out ) const;
 		TensorN &cwiseGreaterInPlace( TensorN const &other, value_type scalar );
 		TensorN &mulNSubstractInPlace( TensorN const &other, value_type scalar );
 
@@ -89,7 +92,13 @@ class TensorN
 		void reduceSumToDim( std::size_t axis, TensorN< 4, T > &output ) requires ( rank == 4 );
 		
 
-		void randomizeHe( std::size_t fan_in );
+		template <typename Generator>
+		void randomize( Generator &generator );
+		/// Seeded uniform \f$[0, 1)\f$; deterministic given \p seed.
+		void randomize( std::uint64_t seed );
+		void randomizeHe( std::size_t fan_in, std::uint64_t seed );
+		/// PyTorch \c nn.Conv* default; see \c Tensor::randomizePytorchDefault.
+		void randomizePytorchDefault( std::size_t fan_in, std::uint64_t seed );
 		// im2col convolution: input (*this), kernel, workspace, and output are all rank-4 (e.g. NCHW).
 		void im2Col( std::array< std::size_t, 3 > const &kernel_shape, TensorN< 2, T > &output ) const requires ( rank == 4 );
 		void multiply( TensorN< 2, T > const &tensor_2d, bool transpose_second, TensorN< 4, T > &output ) const requires ( rank == 4 );
@@ -682,18 +691,17 @@ void batch_norm_forward_nchw( TensorN<4, T> const &input, TensorN<4, T> const &g
 		}
 	}
 
-	if ( is_first_forward ) {
-		std::copy( running_mean_data, running_mean_data + C, last_running_mean_data );
-		std::copy( running_var_data, running_var_data + C, last_running_var_data );
-	} else if ( training ) {
+	// PyTorch / cuDNN convention: momentum is weight on the current batch estimate:
+	//   running ← (1 − momentum) * running + momentum * batch
+	if ( training ) {
 #ifdef _OPENMP
 #pragma omp parallel for schedule( static )
 #endif
 		for ( std::size_t c = 0; c < C; ++c ) {
-			last_running_mean_data[c] = last_running_mean_data[c] * momentum +
-			                            running_mean_data[c] * ( static_cast<T>( 1 ) - momentum );
-			last_running_var_data[c] = last_running_var_data[c] * momentum +
-			                           running_var_data[c] * ( static_cast<T>( 1 ) - momentum );
+			last_running_mean_data[c] = last_running_mean_data[c] * ( static_cast<T>( 1 ) - momentum ) +
+			                            running_mean_data[c] * momentum;
+			last_running_var_data[c] = last_running_var_data[c] * ( static_cast<T>( 1 ) - momentum ) +
+			                           running_var_data[c] * momentum;
 		}
 	}
 }
@@ -787,14 +795,42 @@ void batch_norm_backward_nchw( TensorN<4, T> const &grad_wrt_output, TensorN<4, 
 }
 
 template< std::size_t rank, typename T >
-void TensorN< rank, T >::randomizeHe( std::size_t fan_in )
+template <typename Generator>
+void TensorN< rank, T >::randomize( Generator &generator )
+{
+	std::generate( m_data.data(), m_data.data() + m_data.size(), generator );
+}
+
+template< std::size_t rank, typename T >
+void TensorN< rank, T >::randomize( std::uint64_t seed )
+{
+	std::mt19937_64 gen( seed );
+	std::uniform_real_distribution<double> dis( 0.0, 1.0 );
+	auto generator = [&]() { return static_cast<T>( dis( gen ) ); };
+	randomize( generator );
+}
+
+template< std::size_t rank, typename T >
+void TensorN< rank, T >::randomizeHe( std::size_t fan_in, std::uint64_t seed )
 {
 	double const scale = std::sqrt( 2.0 / static_cast<double>( fan_in ) );
-	std::random_device rd;
-	std::mt19937 gen( rd() );
+	std::mt19937_64 gen( seed );
 	std::uniform_real_distribution<double> dis( -scale, scale );
 	auto generator = [&]() { return static_cast<T>( dis( gen ) ); };
 
+	std::generate( m_data.data(), m_data.data() + m_data.size(), generator );
+}
+
+template< std::size_t rank, typename T >
+void TensorN< rank, T >::randomizePytorchDefault( std::size_t fan_in, std::uint64_t seed )
+{
+	if ( fan_in == 0 ) {
+		return;
+	}
+	double const inv_sqrt = 1.0 / std::sqrt( static_cast<double>( fan_in ) );
+	std::mt19937_64 gen( seed );
+	std::uniform_real_distribution<double> dis( -inv_sqrt, inv_sqrt );
+	auto generator = [&]() { return static_cast<T>( dis( gen ) ); };
 	std::generate( m_data.data(), m_data.data() + m_data.size(), generator );
 }
 
@@ -930,6 +966,27 @@ TensorN<rank, T> &TensorN<rank, T>::operator*=( TensorN const &other )
 		m_data[i] *= other.m_data[i];
 	}
 	return *this;
+}
+
+template< std::size_t rank, typename T >
+void TensorN<rank, T>::elementwiseMultiply( TensorN const &other, TensorN &out ) const
+{
+	if ( m_shape != other.m_shape ) {
+		throw std::invalid_argument( "TensorN::elementwiseMultiply(): shape mismatch" );
+	}
+	if ( this == &out ) {
+		const_cast<TensorN &>( *this ) *= other;
+		return;
+	}
+	if ( out.m_shape != m_shape ) {
+		out = TensorN( m_shape );
+	}
+	#ifdef _OPENMP
+	#pragma omp parallel for schedule( static )
+	#endif
+	for ( std::size_t i = 0; i < m_data.size(); ++i ) {
+		out.m_data[i] = m_data[i] * other.m_data[i];
+	}
 }
 
 template< std::size_t rank, typename T >

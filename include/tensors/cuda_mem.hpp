@@ -30,6 +30,31 @@ inline cudaError_t cuda_malloc_retry( void **dev_ptr, std::size_t size_bytes,
 	return cudaErrorMemoryAllocation;
 }
 
+/// Reuse a single device buffer for cuDNN convolution workspaces: grows with \p need, never shrinks.
+/// \p *ptr / \p *capacity_bytes updated on successful (re)allocation; safe to call with \p need == 0 (no buffer required).
+inline cudaError_t cudnn_workspace_ensure( void **ptr, std::size_t *capacity_bytes, std::size_t need )
+{
+	if ( ptr == nullptr || capacity_bytes == nullptr ) {
+		return cudaErrorInvalidValue;
+	}
+	if ( need <= *capacity_bytes ) {
+		return cudaSuccess;
+	}
+	if ( *ptr != nullptr ) {
+		(void)cudaFree( *ptr );
+		*ptr = nullptr;
+		*capacity_bytes = 0;
+	}
+	if ( need == 0 ) {
+		return cudaSuccess;
+	}
+	cudaError_t const err = cuda_malloc_retry( ptr, need );
+	if ( err == cudaSuccess ) {
+		*capacity_bytes = need;
+	}
+	return err;
+}
+
 } // namespace detail
 } // namespace neural
 

@@ -1,6 +1,10 @@
 #ifndef RELU_LAYER_HPP
 #define RELU_LAYER_HPP
 #include "layer_base.hpp"
+#if NEURAL_CUDA_ENABLED
+#include "cuda_tensor.hpp"
+#include "neural_cuda_layer_sync.hpp"
+#endif
 
 namespace neural {
 
@@ -31,18 +35,26 @@ Tensor *ReLULayer<Tensor>::forward()
 	}
 
 	m_mask.cwiseGreaterInPlace( *input, static_cast<typename Tensor::value_type>(0.) );
-	( *this->getOutput() ) = *input;
-	*this->getOutput() *= m_mask;
+	this->getInput()->elementwiseMultiply( m_mask, *this->getOutput() );
 
+#if NEURAL_CUDA_ENABLED
+	if constexpr ( is_cuda_tensor_v<Tensor> ) {
+		cuda_layer_sync();
+	}
+#endif
 	return this->getOutput();
 }
 
 template <typename Tensor >
 Tensor *ReLULayer<Tensor>::backward()
 {
-	(*this->getGradOutput() ) = (*this->getGradInput() );
-	*this->getGradOutput() *= m_mask;
+	this->getGradInput()->elementwiseMultiply( m_mask,*this->getGradOutput() );
 
+#if NEURAL_CUDA_ENABLED
+	if constexpr ( is_cuda_tensor_v<Tensor> ) {
+		cuda_layer_sync();
+	}
+#endif
 	return this->getGradOutput();
 }
 

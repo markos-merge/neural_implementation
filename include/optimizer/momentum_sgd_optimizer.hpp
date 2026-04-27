@@ -180,6 +180,9 @@ class MomentumSGDOptimizer
 		    static_cast<typename Tensor::value_type>(0.9);
 		/// \(\lambda\) for \(\frac{\lambda}{2}\|W\|^2\) on **weights only** (velocity gets \(+\lambda W\); biases unchanged). Use \c 0 to disable. If training stalls or diverges, lower \(\lambda\) or \c m_learning_rate.
 		typename Tensor::value_type m_l2_regularizer = static_cast<typename Tensor::value_type>( 0 );
+		/// If \c true, Nesterov momentum (same recipe as PyTorch \c SGD(..., nesterov=True)): update uses
+		/// \(g + \lambda W + \mu v\) for weights and \(g + \mu v\) for biases, with \(v\) the post-step velocity.
+		bool m_nesterov = false;
 		std::size_t m_batch_size = 50;
 		std::size_t m_epochs = 100;
 
@@ -205,13 +208,15 @@ class MomentumSGDOptimizer
 
 namespace detail {
 
-/// Momentum with optional L2: \(v \leftarrow \beta v + g + \lambda\theta\), then \(\theta \leftarrow \theta - \eta v\)
-/// (equivalent to task gradient \(g\) plus \(\lambda\theta\) from \(\frac{\lambda}{2}\|\theta\|^2\)).
+/// Momentum with optional L2: \(v \leftarrow \beta v + g + \lambda\theta\).  
+/// Plain: \(\theta \leftarrow \theta - \eta v\).  
+/// Nesterov (PyTorch-style): \(\theta \leftarrow \theta - \eta\,(g + \lambda\theta + \beta v)\) for weights,
+/// \(\theta \leftarrow \theta - \eta\,(g + \beta v)\) for biases, with \(v\) after the velocity update.
 template <typename ParamTensor, typename Layer>
 void momentum_updateParam_impl( VelocityChunk<Layer> &chunk, Layer &layer,
                                 typename ParamTensor::value_type momentum,
                                 typename ParamTensor::value_type learning_rate,
-                                typename ParamTensor::value_type l2_regularizer )
+                                typename ParamTensor::value_type l2_regularizer, bool nesterov )
 {
 	if constexpr ( HasGetWeights<Layer> ) {
 		auto &v = chunk.m_vel_weights;
@@ -224,7 +229,17 @@ void momentum_updateParam_impl( VelocityChunk<Layer> &chunk, Layer &layer,
 			// \(v \mathrel{+}= \lambda w\) via \(v - (-\lambda) w\)
 			v.mulNSubstractInPlace( w, -l2_regularizer );
 		}
-		w.mulNSubstractInPlace( v, learning_rate );
+		if ( !nesterov ) {
+			w.mulNSubstractInPlace( v, learning_rate );
+		} else {
+			using W = std::decay_t<decltype( w )>;
+			W step( g );
+			if ( l2_regularizer > static_cast<typename ParamTensor::value_type>( 0 ) ) {
+				step.mulNSubstractInPlace( w, -l2_regularizer );
+			}
+			step.mulNSubstractInPlace( v, -momentum );
+			w.mulNSubstractInPlace( step, learning_rate );
+		}
 	}
 
 	if constexpr ( HasGetBias<Layer> ) {
@@ -233,7 +248,14 @@ void momentum_updateParam_impl( VelocityChunk<Layer> &chunk, Layer &layer,
 		auto const &gb = layer.getGradBias();
 		vb *= momentum;
 		vb.mulNSubstractInPlace( gb, static_cast<typename std::decay_t<decltype( vb )>::value_type>( -1 ) );
-		b.mulNSubstractInPlace( vb, learning_rate );
+		if ( !nesterov ) {
+			b.mulNSubstractInPlace( vb, learning_rate );
+		} else {
+			using B = std::decay_t<decltype( b )>;
+			B step( gb );
+			step.mulNSubstractInPlace( vb, -momentum );
+			b.mulNSubstractInPlace( step, learning_rate );
+		}
 	}
 }
 
@@ -243,17 +265,20 @@ template <typename ParamTensor, typename Layer>
 void momentum_updateLayer_impl( Layer &layer, VelocityChunk<Layer> &chunk,
                                 typename ParamTensor::value_type learning_rate,
                                 typename ParamTensor::value_type momentum,
-                                typename ParamTensor::value_type l2_regularizer )
+                                typename ParamTensor::value_type l2_regularizer, bool nesterov )
 {
 	if constexpr ( has_tensor_tuple_v<std::decay_t<Layer>> ) {
 		layer.forEachLayerZip( chunk.m_inner, [&]( auto &sub, auto &sub_chunk ) {
 			using Sub = std::decay_t<decltype( sub )>;
 			momentum_updateLayer_impl<typename Sub::tensor_t, Sub>(
-			    sub, sub_chunk, learning_rate, momentum, l2_regularizer );
+			    sub, sub_chunk, learning_rate, momentum, l2_regularizer, nesterov );
 		} );
+	} else if constexpr ( requires { layer.nonRegularizable(); } ) {
+		momentum_updateParam_impl<ParamTensor, Layer>( chunk, layer, momentum, learning_rate, 0.,
+		                                               nesterov );
 	} else if constexpr ( UpdateableLayer<std::decay_t<Layer>, ParamTensor> ) {
 		momentum_updateParam_impl<ParamTensor, Layer>( chunk, layer, momentum, learning_rate,
-		                                               l2_regularizer );
+		                                               l2_regularizer, nesterov );
 	}
 }
 
@@ -304,8 +329,9 @@ template <typename Tensor, typename NN>
 void MomentumSGDOptimizer<Tensor, NN>::applyStep()
 {
 	m_nn.forEachLayerZip( m_velocity, [this]( auto &layer, auto &chunk ) {
-		detail::momentum_updateLayer_impl<Tensor>( layer, chunk, this->m_learning_rate,
-		                                           this->m_momentum, this->m_l2_regularizer );
+		detail::momentum_updateLayer_impl<Tensor>(
+		    layer, chunk, this->m_learning_rate, this->m_momentum, this->m_l2_regularizer,
+		    this->m_nesterov );
 	} );
 }
 

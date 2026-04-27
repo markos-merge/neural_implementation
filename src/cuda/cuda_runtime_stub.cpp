@@ -264,6 +264,16 @@ cudaError_t cuda_bn_saved_inv_std_from_variance_float( float *, float const *, s
 	return cudaSuccess;
 }
 
+cudaError_t cuda_random_uniform_float( float *, std::size_t, unsigned long long )
+{
+	return cudaSuccess;
+}
+
+cudaError_t cuda_random_uniform_symmetric_float( float *, std::size_t, float, unsigned long long )
+{
+	return cudaSuccess;
+}
+
 int cuda_device_count()
 {
 	return -1;

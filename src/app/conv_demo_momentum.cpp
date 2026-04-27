@@ -72,8 +72,8 @@ std::size_t argmax( Tensor2D_t const &t )
 
 auto set_bn_training = []( ConvNN_t &nn, bool training ) {
 	nn.forEachLayer( [training]( auto &layer ) {
-		if constexpr ( requires { layer.set_training( training ); } ) {
-			layer.set_training( training );
+		if constexpr ( requires { layer.setTraining( training ); } ) {
+			layer.setTraining( training );
 		}
 	} );
 };

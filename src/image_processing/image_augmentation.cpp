@@ -549,37 +549,67 @@ void HideAndSeek::apply( Tensor<float> &in, Tensor<float> &out ) const
 static_assert( cifar10_augment_flat == cifar10_input_dim,
                "CIFAR-10 augmentation flat dim must match cifar10_loader.hpp" );
 
-std::unique_ptr<ImageAugmentation> make_cifar10_training_augmentation()
+std::unique_ptr<ImageAugmentation> make_cifar10_training_augmentation( float /*p*/ )
 {
 	std::vector<std::unique_ptr<ImageAugmentation>> v;
-	v.reserve( 7 );
+	v.reserve( 2 );
 	v.push_back( std::make_unique<RandomHorizontalFlip>(
 	    cifar10_augment_rows, cifar10_augment_cols, cifar10_augment_ch, 0.5f ) );
-	v.push_back( std::make_unique<RandomRotation>(
-	    cifar10_augment_rows, cifar10_augment_cols, cifar10_augment_ch, 359.0f ) );
-	v.push_back( std::make_unique<RandomCrop>(
-	    cifar10_augment_rows, cifar10_augment_cols, cifar10_augment_ch, 0.75f ) );
-	v.push_back( std::make_unique<ColorJitter>(
-	    cifar10_augment_rows, cifar10_augment_cols, cifar10_augment_ch, 0.05f, 0.05f, 0.05f, 8.0f ) );
 	v.push_back( std::make_unique<Affine>(
-	    cifar10_augment_rows, cifar10_augment_cols, cifar10_augment_ch, 0.0f, 0.12f ) );
-	v.push_back( std::make_unique<Noise>(
-	    cifar10_augment_rows, cifar10_augment_cols, cifar10_augment_ch, 0.012f ) );
-	v.push_back( std::make_unique<RandomErasing>(
-	    cifar10_augment_rows, cifar10_augment_cols, cifar10_augment_ch, 0.06f, 0.3f, 3.3f ) );
+	    cifar10_augment_rows, cifar10_augment_cols, cifar10_augment_ch, 15.0f, 0.1f ) );
 	return std::make_unique<ImageAugmentationCombinatorial>(
 	    cifar10_augment_rows, cifar10_augment_cols, cifar10_augment_ch, 1.0f, std::move( v ) );
 }
 
+std::pair<float, float> cifar10_compute_normalization( std::vector<Tensor<float>> const &images )
+{
+	double sum    = 0.0;
+	double sum_sq = 0.0;
+	std::size_t const hw = cifar10_augment_rows * cifar10_augment_cols;
+	for ( auto const &img : images ) {
+		cv::Mat mat;
+		tensor_row_to_mat( img.data(), cifar10_augment_rows, cifar10_augment_cols,
+		                   cifar10_augment_ch, mat );
+		cv::Scalar mean_v, std_v;
+		cv::meanStdDev( mat, mean_v, std_v );
+		for ( int c = 0; c < static_cast<int>( cifar10_augment_ch ); ++c ) {
+			sum    += mean_v[c] * static_cast<double>( hw );
+			sum_sq += ( std_v[c] * std_v[c] + mean_v[c] * mean_v[c] )
+			          * static_cast<double>( hw );
+		}
+	}
+	double const n    = static_cast<double>( images.size() )
+	                    * static_cast<double>( hw * cifar10_augment_ch );
+	float const mean  = static_cast<float>( sum / n );
+	float const var   = static_cast<float>( sum_sq / n ) - mean * mean;
+	float const std   = std::sqrt( std::max( 0.0f, var ) );
+	return { mean, std };
+}
+
+void cifar10_apply_normalization( std::vector<Tensor<float>> &images, float mean, float std,
+                                  float eps )
+{
+	float const inv_std = 1.0f / ( std + eps );
+	for ( auto &img : images ) {
+		float *p = img.data();
+		for ( std::size_t i = 0, n = img.size(); i < n; ++i ) {
+			p[i] = ( p[i] - mean ) * inv_std;
+		}
+	}
+}
+
 Cifar10AugmentBatchOp::Cifar10AugmentBatchOp( std::size_t in_cols, std::size_t out_cols,
                                               std::size_t batch_rows,
-                                              std::vector<std::unique_ptr<ImageAugmentation>> &&augmentations )
+                                              std::vector<std::unique_ptr<ImageAugmentation>> &&augmentations,
+                                              float norm_mean, float norm_std, float norm_eps )
     : input_cols( in_cols )
     , target_cols( out_cols )
     , batch_rows( batch_rows )
     , augmentations( std::move( augmentations ) )
     , tmp_in( omp_get_max_threads(), Tensor<float>( 1, in_cols ) )
     , tmp_out( omp_get_max_threads(), Tensor<float>( 1, in_cols ) )
+    , m_norm_mean( norm_mean )
+    , m_norm_inv( 1.0f / ( norm_std + norm_eps ) )
 {
 	(void)target_cols;
 	if ( in_cols != cifar10_augment_flat ) {
@@ -590,19 +620,29 @@ Cifar10AugmentBatchOp::Cifar10AugmentBatchOp( std::size_t in_cols, std::size_t o
 
 void Cifar10AugmentBatchOp::operator()( Tensor<float> &host_x, Tensor<float> &host_y ) const
 {
-	(void)host_y;
-	if ( augmentations.empty() ) {
-		return;
+	(void)host_y; // labels: filled by `assignBatch`; only `host_x` is updated here
+	if ( !augmentations.empty() ) {
+		#ifdef _OPENMP
+		#pragma omp parallel for
+		#endif
+		for ( std::size_t r = 0; r < batch_rows; ++r ) {
+			std::size_t const thread_id = omp_get_thread_num();
+			tmp_in[thread_id].assign( host_x.data() + r * input_cols, input_cols );
+			augmentations[thread_id]->apply( tmp_in[thread_id], tmp_out[thread_id] );
+			// `host_x` = inputs (image width); `host_y` = targets (e.g. one-hot) — only replace rows in host_x.
+			host_x.assignTensorAsRow( r, tmp_out[thread_id] );
+		}
 	}
-	
-	#ifdef _OPENMP
-	#pragma omp parallel for
-	#endif
-	for ( std::size_t r = 0; r < batch_rows; ++r ) {
-		std::size_t const thread_id = omp_get_thread_num();
-		tmp_in[thread_id].assign( host_x.data() + r * input_cols, input_cols );
-		augmentations[thread_id]->apply( tmp_in[thread_id], tmp_out[thread_id] );
-		host_x.assignTensorAsRow( r, tmp_out[thread_id] );
+	if ( m_norm_inv > 0.f ) {
+		#ifdef _OPENMP
+		#pragma omp parallel for
+		#endif
+		for ( std::size_t r = 0; r < batch_rows; ++r ) {
+			float *row = host_x.data() + r * input_cols;
+			for ( std::size_t i = 0; i < input_cols; ++i ) {
+				row[i] = ( row[i] - m_norm_mean ) * m_norm_inv;
+			}
+		}
 	}
 }
 

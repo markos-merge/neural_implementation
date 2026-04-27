@@ -87,3 +87,10 @@ build-cuda/neural_implementation
 .gitignore
 build-cuda/tests
 scripts/__pycache__/cifar10_pytorch_same_arch_as_conv_demo_cuda.cpython-314.pyc
+_parity_build/DartConfiguration.tcl
+_parity_build/tests
+.gitignore
+_parity_build/Makefile
+scripts/__pycache__/conv_demo_cuda_pytorch.cpython-314.pyc
+scripts/__pycache__/conv_demo_cuda_small_pytorch.cpython-314.pyc
+scripts/__pycache__/conv_demo_cuda_tensorflow.cpython-314.pyc
