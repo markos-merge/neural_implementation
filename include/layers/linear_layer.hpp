@@ -92,8 +92,8 @@ void LinearLayer<Tensor>::ensure_weights( std::size_t in_features )
 	m_grad_bias        = Tensor( m_out_features, 1 );
 	std::mt19937_64 wgen( std::random_device{}() );
 	std::uint64_t const s = wgen();
-	m_weights.randomizePytorchDefault( in_features, s );
-	m_bias.randomizePytorchDefault( in_features, s + 0x9e3779b97f4a7c15ULL );
+	// He (uniform): U(-√(2/fan_in), √(2/fan_in)); bias left zero (constructors zero-init).
+	m_weights.randomizeHe( in_features, s );
 }
 
 template < typename Tensor >
@@ -174,8 +174,7 @@ void LinearLayer<Tensor>::initialize()
 	}
 	std::mt19937_64 wgen( std::random_device{}() );
 	std::uint64_t const s = wgen();
-	m_weights.randomizePytorchDefault( m_weights.rows(), s );
-	m_bias.randomizePytorchDefault( m_weights.rows(), s + 0x9e3779b97f4a7c15ULL );
+	m_weights.randomizeHe( m_weights.rows(), s );
 }
 
 } // namespace neural

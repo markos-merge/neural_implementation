@@ -3,6 +3,7 @@
 #include "conv_demo_cuda.hpp"
 #include "conv_demo_cuda_small.hpp"
 #include "conv_demo_momentum.hpp"
+#include "main.hpp"
 #include "mnist_demo.hpp"
 #include <iostream>
 #include <omp.h>
@@ -10,6 +11,8 @@
 
 int main()
 {
+	neural::MainSignal::instance().reset_interrupt_flag();
+
 #ifdef _OPENMP
 	std::cout << "OpenMP is enabled and the number of threads is " << omp_get_max_threads() << std::endl;
 #endif

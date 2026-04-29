@@ -81,7 +81,13 @@ endif()
 
 # Core library (Tensor is header-only in include/tensors/tensor.hpp)
 add_library(neural_impl_lib STATIC)
-target_sources(neural_impl_lib PRIVATE src/image_processing/image_augmentation.cpp)
+target_sources(neural_impl_lib PRIVATE
+	src/image_processing/image_augmentation.cpp
+	src/app/main_signal.cpp
+	src/app/training_progress_bar.cpp
+	src/app/training_epoch_progress_reporter.cpp
+	src/optimizer/cosine_scheduling.cpp
+)
 
 if(NEURAL_CUDA_FOUND)
 	target_sources(neural_impl_lib PRIVATE src/cuda/cuda_runtime.cu src/cuda/cublas_handle.cpp)
@@ -164,6 +170,9 @@ endif()
 add_executable(neural_implementation src/main.cpp src/app/mnist_demo.cpp src/app/cifar_demo.cpp src/app/conv_demo.cpp src/app/conv_demo_momentum.cpp src/app/conv_demo_cuda.cpp src/app/conv_demo_cuda_small.cpp src/app/conv_demo_cpu_small.cpp)
 # target_include_directories(neural_implementation PRIVATE ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(neural_implementation PRIVATE neural_impl_lib)
+
+add_executable(tiny_conv2_linear_compare src/app/tiny_conv2_linear_compare.cpp)
+target_link_libraries(tiny_conv2_linear_compare PRIVATE neural_impl_lib)
 # target_link_libraries(neural_implementation PRIVATE neural_impl_lib)
 
 # Tests
@@ -175,6 +184,7 @@ add_executable(tests
     tests/test_cuda_nn.cpp
     tests/test_convolutional_layer_cuda.cpp
     tests/test_conv_net_momentum_dropout_cuda.cpp
+    tests/test_sequential_conv_linear_cuda.cpp
     tests/test_cuda_runtime.cpp
     tests/test_linear_layer.cpp
     tests/test_relu_layer.cpp

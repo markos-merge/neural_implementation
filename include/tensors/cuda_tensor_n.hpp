@@ -25,6 +25,7 @@
 #include "cublas_handle.hpp"
 #include "cudnn_handle.hpp"
 #include "neural_cuda_kernels.hpp"
+#include "neural_cuda_layer_sync.hpp"
 #include "tensor_n.hpp"
 
 namespace neural {
@@ -286,6 +287,7 @@ template <std::size_t rank, typename T>
 CudaTensorNBase< rank, T >::CudaTensorNBase( std::array< std::size_t, rank > shape )
 	: m_shape( shape )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	std::size_t const size = std::accumulate( shape.begin(), shape.end(), 1, std::multiplies<>() );
 	if(detail::cuda_malloc_retry( reinterpret_cast<void **>( &m_data ), size * sizeof(T) ) != cudaSuccess) {
 		throw std::runtime_error( "device memory allocation failed" );
@@ -306,6 +308,7 @@ template <std::size_t rank, typename T>
 CudaTensorNBase< rank, T >::CudaTensorNBase( std::array< std::size_t, rank > shape, T value )
 	: m_shape( shape )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	std::size_t const size = std::accumulate( shape.begin(), shape.end(), 1, std::multiplies<>() );
 	if(detail::cuda_malloc_retry( reinterpret_cast<void **>( &m_data ), size * sizeof(T) ) != cudaSuccess) {
 		throw std::runtime_error( "device memory allocation failed" );
@@ -328,6 +331,7 @@ template <std::random_access_iterator It>
 CudaTensorNBase< rank, T >::CudaTensorNBase( std::array< std::size_t, rank > shape, It begin, It end )
 	: m_shape( shape )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	std::size_t const size = std::accumulate( shape.begin(), shape.end(), 1, std::multiplies<>() );
 	if(detail::cuda_malloc_retry( reinterpret_cast<void **>( &m_data ), size * sizeof(T) ) != cudaSuccess) {
 		throw std::runtime_error( "device memory allocation failed" );
@@ -344,8 +348,10 @@ CudaTensorNBase< rank, T >::CudaTensorNBase( std::array< std::size_t, rank > sha
 template <std::size_t rank, typename T>
 CudaTensorNBase< rank, T >::~CudaTensorNBase()
 {
-	if(m_data != nullptr) {
+	if ( m_data != nullptr ) {
+		::neural::cuda_layer_sync();
 		cudaFree( m_data );
+		m_data = nullptr;
 	}
 }
 
@@ -353,6 +359,7 @@ template <std::size_t rank, typename T>
 CudaTensorNBase< rank, T >::CudaTensorNBase( CudaTensorNBase const &other )
 	: m_shape( other.m_shape )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if(detail::cuda_malloc_retry( reinterpret_cast<void **>( &m_data ), other.size() * sizeof(T) ) != cudaSuccess) {
 		throw std::runtime_error( "device memory allocation failed" );
 	}
@@ -368,6 +375,7 @@ template <std::size_t rank, typename T>
 CudaTensorNBase< rank, T >::CudaTensorNBase( CudaTensorNBase &&other ) noexcept
 	: m_shape( other.m_shape )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	m_data = other.m_data;
 	other.m_data = nullptr;
 
@@ -377,6 +385,7 @@ CudaTensorNBase< rank, T >::CudaTensorNBase( CudaTensorNBase &&other ) noexcept
 template <std::size_t rank, typename T>
 CudaTensorNBase< rank, T > &CudaTensorNBase< rank, T >::operator=( CudaTensorNBase const &other )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if(this == &other) {
 		return *this;
 	}
@@ -404,6 +413,7 @@ CudaTensorNBase< rank, T > &CudaTensorNBase< rank, T >::operator=( CudaTensorNBa
 template <std::size_t rank, typename T>
 CudaTensorNBase< rank, T > &CudaTensorNBase< rank, T >::operator=( CudaTensorNBase &&other ) noexcept
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if(this == &other) {
 		return *this;
 	}
@@ -451,6 +461,7 @@ std::size_t CudaTensorNBase< rank, T >::flatIndex( std::array<std::size_t, rank>
 template <std::size_t rank, typename T>
 T CudaTensorNBase< rank, T >::operator()( std::array<std::size_t, rank> const &indices ) const
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	T val{};
 
 	cudaMemcpy( &val, m_data + flatIndex(indices), sizeof(T), cudaMemcpyDeviceToHost );
@@ -461,6 +472,7 @@ T CudaTensorNBase< rank, T >::operator()( std::array<std::size_t, rank> const &i
 template <std::size_t rank, typename T>
 void CudaTensorNBase< rank, T >::reshape( std::array<std::size_t, rank> const &new_shape )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if( std::accumulate( new_shape.begin(), new_shape.end(), 1, std::multiplies<>() ) != size() ) {
 		throw std::invalid_argument( "new shape size does not match tensor size" );
 	}
@@ -471,6 +483,7 @@ void CudaTensorNBase< rank, T >::reshape( std::array<std::size_t, rank> const &n
 template <std::size_t rank, typename T>
 void CudaTensorNBase< rank, T >::assign( std::vector<T> const &data )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if(data.size() != size()) {
 		throw std::invalid_argument( "data size does not match tensor size" );
 	}
@@ -481,6 +494,7 @@ void CudaTensorNBase< rank, T >::assign( std::vector<T> const &data )
 template <std::size_t rank, typename T>
 void CudaTensorNBase< rank, T >::assign( T const *data, std::size_t size )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if(size != this->size() ) {
 		throw std::invalid_argument( "data size does not match tensor size" );
 	}
@@ -493,6 +507,7 @@ void CudaTensorNBase< rank, T >::assign( T const *data, std::size_t size )
 template <std::size_t rank, typename T>
 void CudaTensorNBase< rank, T >::assign( std::array<std::size_t, rank> const &indices, T value )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if ( cudaMemcpy( m_data + flatIndex( indices ), &value, sizeof( T ), cudaMemcpyHostToDevice )
 	     != cudaSuccess ) {
 		throw std::runtime_error( "CudaTensorNBase::assign(indices): host to device copy failed" );
@@ -502,6 +517,7 @@ void CudaTensorNBase< rank, T >::assign( std::array<std::size_t, rank> const &in
 template <std::size_t rank, typename T>
 void CudaTensorNBase< rank, T >::addElementwise( std::array<std::size_t, rank> const &indices, T value )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	std::size_t const idx = flatIndex( indices );
 	T *const slot = m_data + idx;
 	if ( cuda_add_elementwise( slot, slot, 1, value ) != cudaSuccess ) {
@@ -515,6 +531,7 @@ void CudaTensorNBase<rank, T>::assign( std::array<std::size_t, rank> const &from
                                        std::array<std::size_t, rank> const &to_slice,
                                        CudaTensorNBase<other_rank, T> const &tensor )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	static_assert( rank >= other_rank, "rank must be greater than or equal to other_rank" );
 
 	for ( std::size_t i = 0; i < rank; ++i ) {
@@ -565,6 +582,7 @@ void CudaTensorNBase<rank, T>::assign( std::array<std::size_t, rank> const &from
 template <std::size_t rank, typename T>
 void CudaTensorNBase< rank, T >::reduceSumToDim( std::size_t axis, CudaTensorNBase<1, T> &output )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if(axis >= rank) {
 		throw std::invalid_argument( "axis out of range" );
 	}
@@ -593,6 +611,7 @@ template <std::size_t rank, typename T>
 void CudaTensorNBase< rank, T >::swapAxes( std::array<std::size_t, rank> const &new_axes,
                                            CudaTensorNBase<rank, T> &output )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if( new_axes.size() != rank ) {
 		throw std::invalid_argument( "new_axes size does not match rank" );
 	}
@@ -616,6 +635,7 @@ void CudaTensorNBase< rank, T >::swapAxes( std::array<std::size_t, rank> const &
 template <std::size_t rank, typename T>
 CudaTensorNBase< rank, T > &CudaTensorNBase< rank, T >::operator*=( CudaTensorNBase const &other )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if ( m_shape != other.m_shape ) {
 		throw std::invalid_argument( "CudaTensorNBase::operator*=: shape mismatch" );
 	}
@@ -638,6 +658,7 @@ CudaTensorNBase< rank, T > &CudaTensorNBase< rank, T >::operator*=( CudaTensorNB
 template <std::size_t rank, typename T>
 void CudaTensorNBase< rank, T >::elementwiseMultiply( CudaTensorNBase const &other, CudaTensorNBase &out ) const
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if ( m_shape != other.m_shape ) {
 		throw std::invalid_argument( "CudaTensorNBase::elementwiseMultiply: shape mismatch" );
 	}
@@ -664,6 +685,7 @@ void CudaTensorNBase< rank, T >::elementwiseMultiply( CudaTensorNBase const &oth
 template <std::size_t rank, typename T>
 CudaTensorNBase< rank, T > &CudaTensorNBase< rank, T >::operator*=( T scalar )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	cudaError_t err = cudaErrorInvalidValue;
 	if constexpr ( std::is_same_v<T, float> ) {
 		err = cuda_scale_float( m_data, size(), scalar );
@@ -683,6 +705,7 @@ template <std::size_t rank, typename T>
 CudaTensorNBase< rank, T > &CudaTensorNBase< rank, T >::cwiseGreaterInPlace( CudaTensorNBase const &other,
                                                                               T scalar )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if ( m_shape != other.m_shape ) {
 		*this = CudaTensorNBase( other.m_shape );
 	}
@@ -706,6 +729,7 @@ template <std::size_t rank, typename T>
 CudaTensorNBase< rank, T > &CudaTensorNBase< rank, T >::mulNSubstractInPlace( CudaTensorNBase const &other,
                                                                                T scalar )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if ( m_shape != other.m_shape ) {
 		throw std::invalid_argument( "CudaTensorNBase::mulNSubstractInPlace: shape mismatch" );
 	}
@@ -724,6 +748,7 @@ template <std::size_t rank, typename T>
 template <typename Generator>
 void CudaTensorNBase< rank, T >::randomize( Generator &generator )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if ( m_data == nullptr || size() == 0 ) {
 		return;
 	}
@@ -735,6 +760,7 @@ void CudaTensorNBase< rank, T >::randomize( Generator &generator )
 template <std::size_t rank, typename T>
 void CudaTensorNBase< rank, T >::randomize( std::uint64_t seed )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if ( m_data == nullptr || size() == 0 ) {
 		return;
 	}
@@ -759,6 +785,7 @@ void CudaTensorNBase< rank, T >::randomize( std::uint64_t seed )
 template <std::size_t rank, typename T>
 void CudaTensorNBase< rank, T >::randomizeHe( std::size_t fan_in, std::uint64_t seed )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	double const scale = std::sqrt( 2.0 / static_cast<double>( fan_in ) );
 	std::mt19937_64 gen( seed );
 	std::uniform_real_distribution<double> dis( -scale, scale );
@@ -778,6 +805,7 @@ void CudaTensorNBase< rank, T >::randomizeHe( std::size_t fan_in, std::uint64_t 
 template <std::size_t rank, typename T>
 void CudaTensorNBase< rank, T >::randomizePytorchDefault( std::size_t fan_in, std::uint64_t seed )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if ( fan_in == 0 ) {
 		return;
 	}
@@ -801,6 +829,7 @@ template <typename T>
 void CudaTensor4<T>::im2Col( std::array<std::size_t, 3> const &kernel_shape,
                              CudaTensor4<T> &output ) const
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	(void)kernel_shape;
 	(void)output;
 }
@@ -813,6 +842,7 @@ void CudaTensor4<T>::im2ColConvolution( CudaTensor4<T> const &kernel,
                                         void **cudnn_workspace_cache,
                                         std::size_t *cudnn_workspace_capacity_bytes )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	(void)gemm_cnhw_layout;
 	(void)im2col_tensor;
 	if constexpr ( !std::is_same_v<T, float> ) {
@@ -916,6 +946,7 @@ void CudaTensor4<T>::im2ColConvolution( CudaTensor4<T> const &kernel,
 template <typename T>
 void CudaTensor4<T>::addColorChannelInPlace( CudaTensorNBase<1, T> const &bias )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if constexpr ( !std::is_same_v<T, float> ) {
 		throw std::runtime_error( "CudaTensor4::addColorChannelInPlace: only float is supported" );
 	} else {
@@ -953,6 +984,7 @@ void CudaTensor4<T>::addColorChannelInPlace( CudaTensorNBase<1, T> const &bias )
 template <typename T>
 void CudaTensor4<T>::addColorChannelInPlace( CudaTensor4<T> const &bias )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if constexpr ( !std::is_same_v<T, float> ) {
 		throw std::runtime_error( "CudaTensor4::addColorChannelInPlace: only float is supported" );
 	} else {
@@ -995,6 +1027,7 @@ void batch_norm_forward_nchw( CudaTensor4<T> const &input, CudaTensor4<T> const 
                               CudaTensor4<T> &last_running_var, T eps, T momentum,
                               bool training, bool is_first_forward, CudaTensor4<T> &output )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if constexpr ( !std::is_same_v<T, float> ) {
 		throw std::runtime_error( "batch_norm_forward_nchw: only float is supported" );
 	} else {
@@ -1079,6 +1112,7 @@ void batch_norm_backward_nchw( CudaTensor4<T> const &grad_wrt_output,
                                CudaTensor4<T> &grad_gamma, CudaTensor4<T> &grad_beta,
                                CudaTensor4<T> &grad_wrt_input )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if constexpr ( !std::is_same_v<T, float> ) {
 		throw std::runtime_error( "batch_norm_backward_nchw: only float is supported" );
 	} else {
@@ -1168,6 +1202,7 @@ void convolutional_backward_cudnn( CudaTensor4<T> &grad_wrt_output_nchw, CudaTen
                                    void **cudnn_workspace_cache = nullptr,
                                    std::size_t *cudnn_workspace_capacity_bytes = nullptr )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if constexpr ( !std::is_same_v<T, float> ) {
 		throw std::runtime_error( "convolutional_backward_cudnn: only float is supported" );
 	} else {
@@ -1329,6 +1364,7 @@ void max_pool_forward_cudnn( CudaTensor4<T> const &input, CudaTensor4<T> &output
                              CudaTensorNBase<4, std::size_t> &argmax_indices, std::size_t pool_size,
                              std::size_t stride )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	(void)argmax_indices;
 	if constexpr ( !std::is_same_v<T, float> ) {
 		throw std::runtime_error( "max_pool_forward_cudnn: only float is supported" );
@@ -1382,6 +1418,7 @@ void max_pool_backward_cudnn( CudaTensor4<T> const &input, CudaTensor4<T> const 
                               CudaTensorNBase<4, std::size_t> const &argmax_indices, std::size_t pool_size,
                               std::size_t stride )
 {
+	CudaStreamSyncOnExit const _cuda_stream_sync;
 	(void)argmax_indices;
 	if constexpr ( !std::is_same_v<T, float> ) {
 		throw std::runtime_error( "max_pool_backward_cudnn: only float is supported" );

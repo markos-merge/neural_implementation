@@ -16,6 +16,8 @@ CIFAR-10 training matching `src/app/conv_demo_cuda.cpp` / cifar10vgg topology �
 
 Each epoch prints loss, val_loss, acc, val_acc, lr, and wall time for that epoch (seconds).
 
+Val/test forward runs in torch.inference_mode() (no autograd); training still uses loss.backward().
+
 Usage:
   pip install torch torchvision
   python scripts/conv_demo_cuda_pytorch.py
@@ -27,6 +29,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from contextlib import nullcontext
 
 import numpy as np
 import torch
@@ -79,7 +82,9 @@ def build_param_groups(model: nn.Module, weight_decay: float) -> list[dict]:
 
 
 class Cifar10Vgg(nn.Module):
-    """Same layer pattern as `conv_demo_cuda` / cifar10vgg: Conv–ReLU–BN–[Dropout] …"""
+    """Mirrors geifmany/cifar-10-vgg `build_model()`: Conv→ReLU→BN, Keras Dropout after first BN in each
+    block (0.3 / 0.4 / 0.5), two mid-block dropouts for 3-conv blocks, Dropout(0.5) after last pool, then
+    Dense 512→ReLU→BN→Dropout(0.5)→Dense 10. Same as `conv_demo_cuda.cpp` (C++ uses keep_prob = 1 − p)."""
 
     def __init__(
         self,
@@ -93,69 +98,59 @@ class Cifar10Vgg(nn.Module):
         layers_list: list[nn.Module] = []
         c = 3
 
-        def add_conv_block(out_c: int, d: float | None) -> None:
+        def add_crb_d(out_c: int, drop_p: float) -> None:
             nonlocal c, layers_list
-            layers_list.extend(
-                [nn.Conv2d(c, out_c, 3, padding=1, bias=True), nn.ReLU(inplace=True)]
-            )
+            layers_list += [
+                nn.Conv2d(c, out_c, 3, padding=1, bias=True),
+                nn.ReLU(inplace=True),
+                nn.BatchNorm2d(out_c, eps=b[0], momentum=b[1]),
+                nn.Dropout(drop_p),
+            ]
             c = out_c
-            layers_list.append(nn.BatchNorm2d(c, eps=b[0], momentum=b[1]))
-            if d is not None:
-                layers_list.append(nn.Dropout(d))
 
-        # block 1
-        add_conv_block(64, 0.0)
-        layers_list += [
-            nn.Conv2d(64, 64, 3, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm2d(64, eps=b[0], momentum=b[1]),
-            nn.MaxPool2d(2, 2),
-        ]
-        # block 2
-        add_conv_block(128, 0.0)
-        layers_list += [
-            nn.Conv2d(128, 128, 3, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm2d(128, eps=b[0], momentum=b[1]),
-            nn.MaxPool2d(2, 2),
-        ]
-        # block 3
-        add_conv_block(256, 0.0)
-        add_conv_block(256, 0.0)
-        layers_list += [
-            nn.Conv2d(256, 256, 3, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm2d(256, eps=b[0], momentum=b[1]),
-            nn.MaxPool2d(2, 2),
-        ]
-        # block 4
-        add_conv_block(512, 0.0)
-        add_conv_block(512, 0.0)
-        layers_list += [
-            nn.Conv2d(512, 512, 3, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm2d(512, eps=b[0], momentum=b[1]),
-            nn.MaxPool2d(2, 2),
-        ]
-        # block 5
-        add_conv_block(512, 0.0)
-        add_conv_block(512, 0.0)
-        layers_list += [
-            nn.Conv2d(512, 512, 3, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm2d(512, eps=b[0], momentum=b[1]),
-            nn.MaxPool2d(2, 2),
-        ]
-        c = 512  # for classifier
+        def add_crb(out_c: int) -> None:
+            nonlocal c, layers_list
+            layers_list += [
+                nn.Conv2d(c, out_c, 3, padding=1, bias=True),
+                nn.ReLU(inplace=True),
+                nn.BatchNorm2d(out_c, eps=b[0], momentum=b[1]),
+            ]
+            c = out_c
+
+        # block 1: 64, Dropout(0.3) after first BN
+        add_crb_d(64, 0.3)
+        add_crb(64)
+        layers_list.append(nn.MaxPool2d(2, 2))
+        # block 2: 128, Dropout(0.4) after first BN
+        add_crb_d(128, 0.4)
+        add_crb(128)
+        layers_list.append(nn.MaxPool2d(2, 2))
+        # block 3: 256, two Dropout(0.5) after first two BN
+        add_crb_d(256, 0.5)
+        add_crb_d(256, 0.5)
+        add_crb(256)
+        layers_list.append(nn.MaxPool2d(2, 2))
+        # block 4: 512
+        add_crb_d(512, 0.5)
+        add_crb_d(512, 0.5)
+        add_crb(512)
+        layers_list.append(nn.MaxPool2d(2, 2))
+        # block 5: 512
+        add_crb_d(512, 0.5)
+        add_crb_d(512, 0.5)
+        add_crb(512)
+        layers_list.append(nn.MaxPool2d(2, 2))
+
+        layers_list.append(nn.Dropout(0.5))
+        feat_c = c
 
         self.features = nn.Sequential(*layers_list)
         self.classifier = nn.Sequential(
-            nn.Dropout(0.0),
             nn.Flatten(),
-            nn.Linear(c * 1 * 1, 512, bias=True),
+            nn.Linear(feat_c * 1 * 1, 512, bias=True),
             nn.ReLU(inplace=True),
             nn.BatchNorm1d(512, eps=b[0], momentum=b[1]),
-            nn.Dropout(0.0),
+            nn.Dropout(0.5),
             nn.Linear(512, num_classes, bias=True),
         )
 
@@ -183,20 +178,22 @@ def one_epoch(
     else:
         model.eval()
     tot_loss, tot_acc, n = 0.0, 0.0, 0
-    for x, y in loader:
-        x = x.to(device, non_blocking=True)
-        y = y.to(device, non_blocking=True)
-        if train:
-            optimizer.zero_grad(set_to_none=True)
-        logits = model(x)
-        loss = criterion(logits, y)
-        if train:
-            loss.backward()
-            optimizer.step()
-        bs = x.size(0)
-        tot_loss += loss.item() * bs
-        tot_acc += accuracy(logits, y) * bs
-        n += bs
+    grad_ctx = nullcontext() if train else torch.inference_mode()
+    with grad_ctx:
+        for x, y in loader:
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
+            if train:
+                optimizer.zero_grad(set_to_none=True)
+            logits = model(x)
+            loss = criterion(logits, y)
+            if train:
+                loss.backward()
+                optimizer.step()
+            bs = x.size(0)
+            tot_loss += loss.item() * bs
+            tot_acc += accuracy(logits, y) * bs
+            n += bs
     return tot_loss / n, tot_acc / n
 
 

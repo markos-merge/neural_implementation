@@ -200,8 +200,8 @@ void ConvolutionalLayer< TensorN_t >::ensure_weights( std::size_t in_channels )
 	std::size_t const fan_in = ws[1] * ws[2] * ws[3];
 	std::mt19937_64 wgen( std::random_device{}() );
 	std::uint64_t const s = wgen();
-	m_weights.randomizePytorchDefault( fan_in, s );
-	m_bias.randomizePytorchDefault( fan_in, s + 0x9e3779b97f4a7c15ULL );
+	// He (uniform): U(-√(2/fan_in), √(2/fan_in)); bias left zero (constructors zero-init).
+	m_weights.randomizeHe( fan_in, s );
 }
 
 template < typename TensorN_t >
@@ -214,8 +214,8 @@ void ConvolutionalLayer< TensorN_t >::initialize()
 	std::size_t const fan_in = ws[1] * ws[2] * ws[3];
 	std::mt19937_64 wgen( std::random_device{}() );
 	std::uint64_t const s = wgen();
-	m_weights.randomizePytorchDefault( fan_in, s );
-	m_bias.randomizePytorchDefault( fan_in, s + 0x9e3779b97f4a7c15ULL );
+	// He (uniform): U(-√(2/fan_in), √(2/fan_in)); bias left zero (constructors zero-init).
+	m_weights.randomizeHe( fan_in, s );
 }
 
 template < typename TensorN_t >

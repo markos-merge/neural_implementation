@@ -12,26 +12,12 @@
 #include <string>
 #include <chrono>
 #include "tensor.hpp"
+#include "training_progress_bar.hpp"
 
 namespace {
 
 // using Tensor_t = neural::CudaTensor<float>;
 using Tensor_t = neural::Tensor<float>;
-
-int const PROGRESS_WIDTH = 40;
-
-void draw_progress_bar( std::size_t current, std::size_t total, float loss, double epoch_sec,
-                         char const *prefix = "" )
-{
-	float pct = total > 0 ? static_cast<float>( current ) / static_cast<float>( total ) : 0.f;
-	int filled = static_cast<int>( pct * PROGRESS_WIDTH );
-	std::cout << "\r" << prefix << "[";
-	for ( int i = 0; i < PROGRESS_WIDTH; ++i )
-		std::cout << ( i < filled ? '=' : ( i == filled ? '>' : '-' ) );
-	std::cout << "] " << std::fixed << std::setprecision( 1 ) << ( pct * 100.f ) << "%"
-	          << "  " << std::setprecision( 3 ) << epoch_sec << "s/epoch"
-	          << "  loss: " << std::setprecision( 4 ) << loss << "    " << std::flush;
-}
 
 using CifarNN =
     neural::SequentialNN<Tensor_t, neural::SoftmaxCrossEntropyLoss<Tensor_t>,
@@ -136,7 +122,9 @@ void run_cifar10_demo()
 		           last_epoch_end = now;
 		           std::string const prefix = "Epoch " + std::to_string( epoch + 1 ) + "/"
 		                                      + std::to_string( epoch_max ) + " ";
-		           draw_progress_bar( epoch + 1, epoch_max, loss, epoch_sec, prefix.c_str() );
+		           neural::draw_training_epoch_progress_bar(
+		               epoch + 1, epoch_max, loss, epoch_sec, prefix.c_str(),
+		               static_cast<float>( opt.m_learning_rate ) );
 		           return false;
 	           } );
 	std::cout << "\n";

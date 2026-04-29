@@ -8,7 +8,6 @@
 #include <functional>
 #include <future>
 #include <type_traits>
-#include "layer.hpp"
 #include "tensor.hpp"
 #include "cuda_tensor.hpp"
 
@@ -65,11 +64,22 @@ void updateParam_impl( Tensor &param, Tensor const &grad, typename Tensor::value
 template< typename Tensor, typename Layer >
 void updateLayer_impl( Layer &layer, typename Tensor::value_type learning_rate, typename Tensor::value_type l2_regularizer )
 {
-	if constexpr ( UpdateableLayer< std::decay_t<Layer>, Tensor> ) {
-		updateParam_impl<typename std::decay_t<Layer>::tensor_t, typename std::decay_t<Layer>>( layer.getWeights(), layer.getGradWeights(), learning_rate, l2_regularizer );
-		updateParam_impl<typename std::decay_t<Layer>::bias_t, typename std::decay_t<Layer>>(
-		    layer.getBias(), layer.getGradBias(), learning_rate,
-		    static_cast<typename Tensor::value_type>( 0 ) );
+	// Trainable layer: use parameter tensor type (not the NN's 2D latch type). \c UpdateableLayer
+	// is not used because rank-4 CUDA tensors do not satisfy \c TensorLike (no \c operator()(0,0)).
+	if constexpr ( requires( Layer &l ) {
+		l.getWeights();
+		l.getGradWeights();
+		l.getBias();
+		l.getGradBias();
+	} ) {
+		using Param = std::decay_t<decltype( layer.getWeights() )>;
+		using Value = typename Param::value_type;
+		updateParam_impl<Param, std::decay_t<Layer>>( layer.getWeights(), layer.getGradWeights(),
+		                                              static_cast<Value>( learning_rate ),
+		                                              static_cast<Value>( l2_regularizer ) );
+		updateParam_impl<Param, std::decay_t<Layer>>(
+		    layer.getBias(), layer.getGradBias(), static_cast<Value>( learning_rate ),
+		    static_cast<Value>( 0 ) );
 	} else if constexpr ( requires( Layer &l ) { l.forEachLayer( []( auto && ) {} ); } ) {
 		layer.forEachLayer( [&]( auto &&sub ) {
 			detail::updateLayer_impl< typename std::decay_t<decltype(sub)>::tensor_t, std::decay_t<decltype(sub)> >( sub, learning_rate, l2_regularizer );

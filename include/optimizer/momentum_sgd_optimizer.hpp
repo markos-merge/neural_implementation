@@ -10,7 +10,6 @@
 #include <utility>
 #include <future>
 #include "convolutional_box.hpp"
-#include "layer.hpp"
 #include "tensor.hpp"
 #include <tuple>
 
@@ -276,7 +275,12 @@ void momentum_updateLayer_impl( Layer &layer, VelocityChunk<Layer> &chunk,
 	} else if constexpr ( requires { layer.nonRegularizable(); } ) {
 		momentum_updateParam_impl<ParamTensor, Layer>( chunk, layer, momentum, learning_rate, 0.,
 		                                               nesterov );
-	} else if constexpr ( UpdateableLayer<std::decay_t<Layer>, ParamTensor> ) {
+	} else if constexpr ( requires( Layer &l ) {
+		l.getWeights();
+		l.getGradWeights();
+		l.getBias();
+		l.getGradBias();
+	} ) {
 		momentum_updateParam_impl<ParamTensor, Layer>( chunk, layer, momentum, learning_rate,
 		                                               l2_regularizer, nesterov );
 	}

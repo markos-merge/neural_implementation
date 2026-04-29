@@ -1,4 +1,5 @@
 #include "conv_demo_cpu_small.hpp"
+#include "main.hpp"
 #include "cifar10_loader.hpp"
 #include "image_processing/image_augmentation.hpp"
 #include "metrics.hpp"
@@ -14,8 +15,6 @@
 #include "sequential_nn.hpp"
 #include "tensor.hpp"
 #include "tensor_n.hpp"
-#include <csignal>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -148,17 +147,10 @@ float train_accuracy_augmented_replay( std::size_t epoch, std::size_t batch_size
 
 } // namespace
 
-namespace {
-std::sig_atomic_t volatile gSignalStatusCpuSmall;
-}
-static void signal_handler_cpu_small( int signal )
-{
-	gSignalStatusCpuSmall = signal;
-}
-
 void run_conv_demo_cpu_small()
 {
-	std::signal( SIGINT, signal_handler_cpu_small );
+	neural::MainSignal::instance().reset_interrupt_flag();
+	neural::MainSignal::instance().install_sigint_handler();
 	std::cout
 	    << "CIFAR-10 small conv demo (CPU, TensorN im2col) — trunk differs from CUDA valid padding + 1×1 tail\n";
 
@@ -312,7 +304,7 @@ void run_conv_demo_cpu_small()
 		                     << std::setprecision( 6 ) << lr_print << "  time_s: " << std::setprecision( 3 )
 		                     << elapsed << "\n"
 		                     << std::flush;
-		           bool const stop = ( gSignalStatusCpuSmall != 0 );
+		           bool const stop = neural::MainSignal::instance().interrupt_requested();
 		           return stop ? true : ans;
 	           },
 	           cifar_batch_op );

@@ -10,6 +10,7 @@
 #include "sgd_optimizer.hpp"
 #include "tensor.hpp"
 #include "tensor_n.hpp"
+#include "training_progress_bar.hpp"
 #include <chrono>
 #include <filesystem>
 #include <iomanip>
@@ -46,21 +47,6 @@ using ConvNN_t = neural::SequentialNN<
     neural::LinearLayer<Tensor2D_t>,
     neural::ReLULayer<Tensor2D_t>,
     neural::LinearLayer<Tensor2D_t>>;
-
-int const kProgressWidth = 40;
-
-void draw_progress_bar( std::size_t current, std::size_t total, float loss,
-                         double epoch_sec, char const *prefix = "" )
-{
-	float const pct    = total > 0 ? static_cast<float>( current ) / static_cast<float>( total ) : 0.f;
-	int const filled   = static_cast<int>( pct * kProgressWidth );
-	std::cout << "\r" << prefix << "[";
-	for ( int i = 0; i < kProgressWidth; ++i )
-		std::cout << ( i < filled ? '=' : ( i == filled ? '>' : '-' ) );
-	std::cout << "] " << std::fixed << std::setprecision( 1 ) << ( pct * 100.f ) << "%"
-	          << "  " << std::setprecision( 3 ) << epoch_sec << "s/epoch"
-	          << "  loss: " << std::setprecision( 4 ) << loss << "    " << std::flush;
-}
 
 std::size_t argmax( Tensor2D_t const &t )
 {
@@ -159,8 +145,8 @@ void run_conv_demo()
 		    last_epoch_end = now;
 		    std::string const prefix = "Epoch " + std::to_string( epoch + 1 ) +
 		                               "/" + std::to_string( epoch_max ) + " ";
-		    draw_progress_bar( epoch + 1, epoch_max, mean_loss, elapsed,
-		                       prefix.c_str() );
+		    neural::draw_training_epoch_progress_bar(
+		        epoch + 1, epoch_max, mean_loss, elapsed, prefix.c_str(), opt.m_learning_rate );
 
 		    // if ( loss < 0.1 ) {
 			  //   ans = true;

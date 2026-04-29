@@ -8,7 +8,6 @@
 template < typename MatrixType >
 concept TensorLike = requires( MatrixType m ) {
 	typename MatrixType::value_type;
-	typename MatrixType::matrix_type;
 	typename MatrixType::size_type;
 
 	{ m.rows() } -> std::convertible_to<std::size_t>;

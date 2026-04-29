@@ -2,6 +2,7 @@
 #define NEURAL_IMPL_CUDA_TENSOR_HPP
 
 #include "neural_cuda_kernels.hpp"
+#include "neural_cuda_layer_sync.hpp"
 
 #include <array>
 #include <cstddef>
@@ -31,16 +32,6 @@
 namespace neural {
 
 #if NEURAL_CUDA_ENABLED
-
-template <typename T>
-struct CudaTensorMatrixPlaceholder
-{
-	using value_type = T;
-	T *data = nullptr;
-	std::size_t rows = 0;
-	std::size_t cols = 0;
-};
-
 template <typename T = float>
 class CudaTensor
 {
@@ -49,7 +40,6 @@ class CudaTensor
 #endif
 	public:
 		using value_type = T;
-		using matrix_type = CudaTensorMatrixPlaceholder<value_type>;
 		using size_type = std::size_t;
 
 		template <typename type>
@@ -172,6 +162,7 @@ CudaTensor<T>::CudaTensor( std::size_t rows, std::size_t cols )
     : m_rows( rows )
     , m_cols( cols )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( rows == 0 || cols == 0 ) {
 		return;
 	}
@@ -204,6 +195,7 @@ CudaTensor<T>::CudaTensor( std::size_t rows, std::size_t cols, It begin, It end 
     : m_rows( rows )
     , m_cols( cols )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	std::size_t const n = rows * cols;
 	std::ptrdiff_t const dist = std::distance( begin, end );
 	if ( dist < 0 || static_cast<std::size_t>( dist ) != n ) {
@@ -231,6 +223,7 @@ template <typename T>
 CudaTensor<T>::~CudaTensor()
 {
 	if ( m_data_handle != nullptr ) {
+		::neural::cuda_layer_sync();
 		cudaFree( m_data_handle );
 		m_data_handle = nullptr;
 	}
@@ -241,6 +234,7 @@ CudaTensor<T>::CudaTensor( std::size_t rows, std::size_t cols, value_type value 
     : m_rows( rows )
     , m_cols( cols )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	cudaError_t cuda_stat = detail::cuda_malloc_retry(
 	    reinterpret_cast<void **>( &m_data_handle ), rows * cols * sizeof( T ) );
 	if ( cuda_stat != cudaSuccess ) {
@@ -271,6 +265,7 @@ CudaTensor<T>::CudaTensor( CudaTensor const &other )
     : m_rows( other.m_rows )
     , m_cols( other.m_cols )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( other.m_data_handle != nullptr ) {
 		cudaError_t cuda_stat = detail::cuda_malloc_retry(
 		    reinterpret_cast<void **>( &m_data_handle ),
@@ -297,6 +292,7 @@ CudaTensor<T>::CudaTensor( CudaTensor &&other ) noexcept
     , m_cols( other.m_cols )
     , m_data_handle( other.m_data_handle )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	other.m_data_handle = nullptr;
 	other.m_rows = 0;
 	other.m_cols = 0;
@@ -305,6 +301,7 @@ CudaTensor<T>::CudaTensor( CudaTensor &&other ) noexcept
 template <typename T>
 CudaTensor<T> &CudaTensor<T>::operator=( CudaTensor const &other )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( this == &other ) {
 		return *this;
 	}
@@ -356,6 +353,7 @@ CudaTensor<T> &CudaTensor<T>::operator=( CudaTensor const &other )
 template <typename T>
 CudaTensor<T> &CudaTensor<T>::operator=( CudaTensor &&other ) noexcept
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( this == &other ) {
 		return *this;
 	}
@@ -393,6 +391,7 @@ template <typename T>
 typename CudaTensor<T>::value_type CudaTensor<T>::operator()( std::size_t row,
                                                               std::size_t col ) const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( row >= m_rows || col >= m_cols ) {
 		throw std::out_of_range( "CudaTensor::operator(): index out of range" );
 	}
@@ -413,6 +412,7 @@ typename CudaTensor<T>::value_type CudaTensor<T>::operator()( std::size_t row,
 template <typename T>
 void CudaTensor<T>::assign( std::size_t row, std::size_t col, value_type value )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( row >= m_rows || col >= m_cols ) {
 		throw std::out_of_range( "CudaTensor::assign(): index out of range" );
 	}
@@ -430,6 +430,7 @@ void CudaTensor<T>::assign( std::size_t row, std::size_t col, value_type value )
 template <typename T>
 void CudaTensor<T>::assign( value_type value )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_data_handle == nullptr || size() == 0 ) {
 		return;
 	}
@@ -453,6 +454,7 @@ void CudaTensor<T>::assign( value_type value )
 template <typename T>
 void CudaTensor<T>::assignTensorAsRow( std::size_t row, CudaTensor const &other )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( row >= m_rows ) {
 		throw std::out_of_range( "CudaTensor::assignTensorAsRow(): row out of range" );
 	}
@@ -478,6 +480,7 @@ void CudaTensor<T>::assignTensorAsRow( std::size_t row, CudaTensor const &other 
 template <typename T>
 void CudaTensor<T>::assignTensor( value_type *value, std::size_t size )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( size != m_rows * m_cols ) {
 		throw std::out_of_range( "CudaTensor::assignTensorAsRow(): row out of range" );
 	}
@@ -493,6 +496,7 @@ void CudaTensor<T>::assignTensor( value_type *value, std::size_t size )
 template <typename T>
 void CudaTensor<T>::assign( value_type const *src, std::size_t size )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( size != m_rows * m_cols ) {
 		throw std::out_of_range( "CudaTensor::assign(ptr): size mismatch" );
 	}
@@ -507,6 +511,7 @@ template <typename T>
 void CudaTensor<T>::assignTensorBlock( CudaTensor const &src, std::vector< int > const &indices,
                                        std::size_t row_indices_src, std::size_t row_indices_size )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( row_indices_size == 0u ) {
 		return;
 	}
@@ -572,6 +577,7 @@ void CudaTensor<T>::assignTensorBlock( CudaTensor const &src, std::vector< int >
 template <typename T>
 CudaTensor<T> CudaTensor<T>::transpose() const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_data_handle == nullptr || m_rows == 0 || m_cols == 0 ) {
 		return CudaTensor<T>( m_cols, m_rows );
 	}
@@ -600,6 +606,7 @@ CudaTensor<T> CudaTensor<T>::transpose() const
 template <typename T>
 CudaTensor<T> &CudaTensor<T>::transposeInPlace() noexcept
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	*this = transpose();
 	return *this;
 }
@@ -607,6 +614,7 @@ CudaTensor<T> &CudaTensor<T>::transposeInPlace() noexcept
 template <typename T>
 CudaTensor<T> CudaTensor<T>::reshape( std::size_t rows, std::size_t cols ) const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	CudaTensor<T> out( *this );
 	out.reshapeInPlace( rows, cols );
 
@@ -616,6 +624,7 @@ CudaTensor<T> CudaTensor<T>::reshape( std::size_t rows, std::size_t cols ) const
 template <typename T>
 CudaTensor<T> &CudaTensor<T>::reshapeInPlace( std::size_t rows, std::size_t cols )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( rows * cols != m_rows * m_cols ) {
 		throw std::invalid_argument(
 		    "CudaTensor::reshapeInPlace: new shape must have the same number of elements" );
@@ -629,6 +638,7 @@ CudaTensor<T> &CudaTensor<T>::reshapeInPlace( std::size_t rows, std::size_t cols
 template <typename T>
 CudaTensor<T> CudaTensor<T>::matmul( CudaTensor const &other ) const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_data_handle == nullptr || other.m_data_handle == nullptr ) {
 		throw std::runtime_error( "CudaTensor::matmul(): one of the tensors is not initialized" );
 	}
@@ -675,6 +685,7 @@ CudaTensor<T> CudaTensor<T>::matmul( CudaTensor const &other ) const
 template <typename T>
 CudaTensor<T> &CudaTensor<T>::matmulInPlace( CudaTensor const &other )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	CudaTensor<T> out = matmul( other );
 	*this = std::move( out );
 	return *this;
@@ -684,6 +695,7 @@ template <typename T>
 CudaTensor<T> &CudaTensor<T>::matmulInPlace( CudaTensor const &m1, CudaTensor const &m2,
                                              bool transpose_first, bool transpose_second )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_data_handle == nullptr || m1.m_data_handle == nullptr || m2.m_data_handle == nullptr ) {
 		throw std::runtime_error( "CudaTensor::matmulInPlace(m1,m2): one of the tensors is not initialized" );
 	}
@@ -824,6 +836,7 @@ CudaTensor<T> &CudaTensor<T>::matmulInPlace( CudaTensor const &m1, CudaTensor co
 template <typename T>
 CudaTensor<T> &CudaTensor<T>::elementwiseMultiplyInPlace( CudaTensor const &other )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_rows != other.m_rows || m_cols != other.m_cols ) {
 		throw std::invalid_argument(
 		    "CudaTensor::elementwiseMultiplyInPlace(): incompatible dimensions" );
@@ -858,6 +871,7 @@ CudaTensor<T> &CudaTensor<T>::elementwiseMultiplyInPlace( CudaTensor const &othe
 template <typename T>
 void CudaTensor<T>::elementwiseMultiply( CudaTensor const &other, CudaTensor &out ) const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_rows != other.m_rows || m_cols != other.m_cols ) {
 		throw std::invalid_argument(
 		    "CudaTensor::elementwiseMultiply(): incompatible dimensions" );
@@ -896,6 +910,7 @@ void CudaTensor<T>::elementwiseMultiply( CudaTensor const &other, CudaTensor &ou
 template <typename T>
 CudaTensor<T> &CudaTensor<T>::mulNSubstractInPlace( CudaTensor const &other, value_type scalar )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_data_handle == nullptr || other.m_data_handle == nullptr ) {
 		throw std::runtime_error( "CudaTensor::mulNSubstractInPlace(): tensor not initialized" );
 	}
@@ -922,6 +937,7 @@ CudaTensor<T> &CudaTensor<T>::mulNSubstractInPlace( CudaTensor const &other, val
 template <typename T>
 CudaTensor<T> CudaTensor<T>::divideRowsWithCol( CudaTensor const &other ) const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_data_handle == nullptr || other.m_data_handle == nullptr ) {
 		throw std::runtime_error( "CudaTensor::divideRowsWithCol(): one of the tensors is not initialized" );
 	}
@@ -956,6 +972,7 @@ CudaTensor<T> CudaTensor<T>::divideRowsWithCol( CudaTensor const &other ) const
 template <typename T>
 CudaTensor<T> &CudaTensor<T>::divideRowsWithColInPlace( CudaTensor const &other )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_data_handle == nullptr || other.m_data_handle == nullptr ) {
 		throw std::runtime_error( "CudaTensor::divideRowsWithColInPlace(): one of the tensors is not initialized" );
 	}
@@ -985,6 +1002,7 @@ CudaTensor<T> &CudaTensor<T>::divideRowsWithColInPlace( CudaTensor const &other 
 template <typename T>
 typename CudaTensor<T>::value_type CudaTensor<T>::maxCoeff() const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_data_handle == nullptr || size() == 0 ) {
 		return value_type{};
 	}
@@ -1012,6 +1030,7 @@ typename CudaTensor<T>::value_type CudaTensor<T>::maxCoeff() const
 template <typename T>
 CudaTensor<T> CudaTensor<T>::operator+( CudaTensor const &other ) const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_rows != other.m_rows || m_cols != other.m_cols ) {
 		throw std::invalid_argument( "CudaTensor::operator+(): incompatible dimensions" );
 	}
@@ -1060,6 +1079,7 @@ CudaTensor<T> CudaTensor<T>::operator+( CudaTensor const &other ) const
 template <typename T>
 CudaTensor<T> &CudaTensor<T>::operator+=( CudaTensor const &other )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_rows != other.m_rows || m_cols != other.m_cols ) {
 		throw std::invalid_argument( "CudaTensor::operator+=(): incompatible dimensions" );
 	}
@@ -1107,6 +1127,7 @@ CudaTensor<T> &CudaTensor<T>::operator+=( CudaTensor const &other )
 template <typename T>
 CudaTensor<T> CudaTensor<T>::operator-( CudaTensor const &other ) const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_rows != other.m_rows || m_cols != other.m_cols ) {
 		throw std::invalid_argument( "CudaTensor::operator+(): incompatible dimensions" );
 	}
@@ -1155,6 +1176,7 @@ CudaTensor<T> CudaTensor<T>::operator-( CudaTensor const &other ) const
 template <typename T>
 CudaTensor<T> &CudaTensor<T>::operator-=( CudaTensor const &other )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_rows != other.m_rows || m_cols != other.m_cols ) {
 		throw std::invalid_argument( "CudaTensor::operator+=(): incompatible dimensions" );
 	}
@@ -1204,6 +1226,7 @@ CudaTensor<T> &CudaTensor<T>::operator-=( CudaTensor const &other )
 template <typename T>
 CudaTensor<T> CudaTensor<T>::addColwise( CudaTensor const &col ) const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_data_handle == nullptr || col.m_data_handle == nullptr ) {
 		throw std::runtime_error( "CudaTensor::addColwise(): one of the tensors is not initialized" );
 	}
@@ -1221,6 +1244,7 @@ CudaTensor<T> CudaTensor<T>::addColwise( CudaTensor const &col ) const
 template <typename T>
 CudaTensor<T> &CudaTensor<T>::addColwiseInPlace( CudaTensor const &col )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_data_handle == nullptr || col.m_data_handle == nullptr ) {
 		throw std::runtime_error( "CudaTensor::addColwiseInPlace(): one of the tensors is not initialized" );
 	}
@@ -1248,6 +1272,7 @@ CudaTensor<T> &CudaTensor<T>::addColwiseInPlace( CudaTensor const &col )
 template <typename T>
 CudaTensor<T> CudaTensor<T>::subtractColwise( CudaTensor const &col ) const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_data_handle == nullptr || col.m_data_handle == nullptr ) {
 		throw std::runtime_error( "CudaTensor::subtractColwise(): one of the tensors is not initialized" );
 	}
@@ -1277,6 +1302,7 @@ CudaTensor<T> CudaTensor<T>::subtractColwise( CudaTensor const &col ) const
 template <typename T>
 CudaTensor<T> CudaTensor<T>::operator*( CudaTensor const &other ) const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_rows != other.m_rows || m_cols != other.m_cols ) {
 		throw std::invalid_argument( "CudaTensor::operator*(): incompatible dimensions" );
 	}
@@ -1311,6 +1337,7 @@ CudaTensor<T> CudaTensor<T>::operator*( CudaTensor const &other ) const
 template <typename T>
 CudaTensor<T> &CudaTensor<T>::operator*=( CudaTensor const &other )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_rows != other.m_rows || m_cols != other.m_cols ) {
 		throw std::invalid_argument( "CudaTensor::operator*=(): incompatible dimensions" );
 	}
@@ -1342,6 +1369,7 @@ CudaTensor<T> &CudaTensor<T>::operator*=( CudaTensor const &other )
 template <typename T>
 CudaTensor<T> CudaTensor<T>::operator*( value_type scalar ) const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( size() == 0 ) {
 		return CudaTensor<T>{};
 	}
@@ -1372,6 +1400,7 @@ CudaTensor<T> CudaTensor<T>::operator*( value_type scalar ) const
 template <typename T>
 CudaTensor<T> &CudaTensor<T>::operator*=( value_type scalar )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( size() == 0 ) {
 		return *this;
 	}
@@ -1401,6 +1430,7 @@ CudaTensor<T> &CudaTensor<T>::operator*=( value_type scalar )
 template <typename T>
 CudaTensor<T> CudaTensor<T>::cwiseGreater( value_type scalar ) const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( size() == 0 || m_data_handle == nullptr ) {
 		return CudaTensor<T>{};
 	}
@@ -1430,6 +1460,7 @@ CudaTensor<T> CudaTensor<T>::cwiseGreater( value_type scalar ) const
 template <typename T>
 CudaTensor<T> &CudaTensor<T>::cwiseGreaterInPlace( CudaTensor const &other, value_type scalar )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_data_handle == nullptr || other.m_data_handle == nullptr ) {
 		throw std::runtime_error( "CudaTensor::cwiseGreaterInPlace(): tensor not initialized" );
 	}
@@ -1465,6 +1496,7 @@ CudaTensor<T> &CudaTensor<T>::cwiseGreaterInPlace( CudaTensor const &other, valu
 template <typename T>
 CudaTensor<T> CudaTensor<T>::cwiseOneMinus() const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( size() == 0 || m_data_handle == nullptr ) {
 		return CudaTensor<T>{};
 	}
@@ -1491,6 +1523,7 @@ CudaTensor<T> CudaTensor<T>::cwiseOneMinus() const
 template <typename T>
 CudaTensor<T> CudaTensor<T>::cwiseSigmoid() const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( size() == 0 || m_data_handle == nullptr ) {
 		return CudaTensor<T>{};
 	}
@@ -1517,6 +1550,7 @@ CudaTensor<T> CudaTensor<T>::cwiseSigmoid() const
 template <typename T>
 CudaTensor<T> CudaTensor<T>::cwiseExp() const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( size() == 0 || m_data_handle == nullptr ) {
 		return CudaTensor<T>{};
 	}
@@ -1543,6 +1577,7 @@ CudaTensor<T> CudaTensor<T>::cwiseExp() const
 template <typename T>
 CudaTensor<T> CudaTensor<T>::cwiseLog() const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( size() == 0 || m_data_handle == nullptr ) {
 		return CudaTensor<T>{};
 	}
@@ -1569,6 +1604,7 @@ CudaTensor<T> CudaTensor<T>::cwiseLog() const
 template <typename T>
 T CudaTensor<T>::sum() const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( size() == 0 || m_data_handle == nullptr ) {
 		return value_type{};
 	}
@@ -1596,6 +1632,7 @@ T CudaTensor<T>::sum() const
 template <typename T>
 T CudaTensor<T>::asum() const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( size() == 0 || m_data_handle == nullptr ) {
 		return value_type{};
 	}
@@ -1629,6 +1666,7 @@ T CudaTensor<T>::asum() const
 template <typename T>
 CudaTensor<T> CudaTensor<T>::sumAlongAxis( std::size_t axis, bool transpose_out ) const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( axis != 0 && axis != 1 ) {
 		throw std::invalid_argument( "CudaTensor::sumAlongAxis(): axis must be 0 or 1" );
 	}
@@ -1683,6 +1721,7 @@ template <typename T>
 CudaTensor<T> &CudaTensor<T>::sumAlongAxisInPlace( CudaTensor const &src, std::size_t axis,
                                                    bool transpose_out )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( this == &src ) {
 		throw std::runtime_error(
 		    "CudaTensor::sumAlongAxisInPlace(src, axis): src must not be *this" );
@@ -1771,6 +1810,7 @@ CudaTensor<T> &CudaTensor<T>::sumAlongAxisInPlace( CudaTensor const &src, std::s
 template <typename T>
 CudaTensor<T> CudaTensor<T>::max_along_axis( std::size_t axis ) const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( axis != 0 && axis != 1 ) {
 		throw std::invalid_argument( "CudaTensor::max_along_axis(): axis must be 0 or 1" );
 	}
@@ -1824,6 +1864,7 @@ CudaTensor<T> CudaTensor<T>::max_along_axis( std::size_t axis ) const
 template <typename T>
 CudaTensor<std::uint32_t> CudaTensor<T>::argmaxAlongAxis( std::size_t axis ) const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( axis != 0 && axis != 1 ) {
 		throw std::invalid_argument( "CudaTensor::argmaxAlongAxis(): axis must be 0 or 1" );
 	}
@@ -1878,6 +1919,7 @@ template <typename T>
 template <typename Generator>
 void CudaTensor<T>::randomize( Generator &generator ) noexcept
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_data_handle == nullptr || size() == 0 ) {
 		return;
 	}
@@ -1889,6 +1931,7 @@ void CudaTensor<T>::randomize( Generator &generator ) noexcept
 template <typename T>
 void CudaTensor<T>::randomize( std::uint64_t seed ) noexcept
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_data_handle == nullptr || size() == 0 ) {
 		return;
 	}
@@ -1906,6 +1949,7 @@ void CudaTensor<T>::randomize( std::uint64_t seed ) noexcept
 template <typename T>
 void CudaTensor<T>::randomizeHe( std::size_t fan_in, std::uint64_t seed ) noexcept
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( fan_in == 0 ) {
 		return;
 	}
@@ -1929,6 +1973,7 @@ void CudaTensor<T>::randomizeHe( std::size_t fan_in, std::uint64_t seed ) noexce
 template <typename T>
 void CudaTensor<T>::randomizePytorchDefault( std::size_t fan_in, std::uint64_t seed ) noexcept
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( fan_in == 0 ) {
 		return;
 	}
@@ -1952,6 +1997,7 @@ void CudaTensor<T>::randomizePytorchDefault( std::size_t fan_in, std::uint64_t s
 template <typename T>
 void CudaTensor<T>::copyToHost( T *host ) const
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( m_data_handle == nullptr || host == nullptr || size() == 0 ) {
 		return;
 	}
@@ -1975,6 +2021,7 @@ inline void assignBatch(
     Tensor<T> &host_y,
     Op const &op )
 {
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	#ifdef _OPENMP
 	#pragma omp parallel for
 	#endif
@@ -1986,6 +2033,7 @@ inline void assignBatch(
 	op( host_x, host_y );
 	input_batch.assign( host_x.data(), host_x.size() );
 	target_batch.assign( host_y.data(), host_y.size() );
+	::neural::cuda_layer_sync();
 }
 
 

@@ -121,7 +121,16 @@ class ConvolutionalBox : public LayerBase<Tensor2D_t>
 		void ensure_buffers( std::size_t batch_size );
 
 		template <std::size_t... Is>
+		void forward_inner( std::index_sequence<Is...> );
+
+		template <std::size_t I>
+		void forward_one_inner();
+
+		template <std::size_t... Is>
 		void backward_reverse( std::index_sequence<Is...> );
+
+		template <std::size_t I>
+		void backward_one_inner();
 
 		std::size_t m_channels;
 		std::size_t m_height;
@@ -261,7 +270,7 @@ Tensor2D_t *ConvolutionalBox<TensorN_t, Tensor2D_t, Layers...>::forward()
 
 	m_fwd_slots[0].assign( this->getInput()->data(), this->getInput()->size() );
 
-	std::apply( []( auto &...lyr ) { ( lyr.forward(), ... ); }, m_layers );
+	forward_inner( std::make_index_sequence<sizeof...( Layers )>{} );
 
 	TensorN_t const &last     = m_fwd_slots.back();
 	std::size_t const flat    = last.size() / batch;
@@ -280,11 +289,33 @@ Tensor2D_t *ConvolutionalBox<TensorN_t, Tensor2D_t, Layers...>::forward()
 }
 
 template <typename TensorN_t, typename Tensor2D_t, typename... Layers>
+template <std::size_t I>
+void ConvolutionalBox<TensorN_t, Tensor2D_t, Layers...>::forward_one_inner()
+{
+	std::get<I>( m_layers ).forward();
+}
+
+template <typename TensorN_t, typename Tensor2D_t, typename... Layers>
+template <std::size_t... Is>
+void ConvolutionalBox<TensorN_t, Tensor2D_t, Layers...>::forward_inner(
+	std::index_sequence<Is...> )
+{
+	(void)( ( ( forward_one_inner<Is>(), 0 ), ... ) );
+}
+
+template <typename TensorN_t, typename Tensor2D_t, typename... Layers>
+template <std::size_t I>
+void ConvolutionalBox<TensorN_t, Tensor2D_t, Layers...>::backward_one_inner()
+{
+	std::get<I>( m_layers ).backward();
+}
+
+template <typename TensorN_t, typename Tensor2D_t, typename... Layers>
 template <std::size_t... Is>
 void ConvolutionalBox<TensorN_t, Tensor2D_t, Layers...>::backward_reverse(
 	std::index_sequence<Is...> )
 {
-	( std::get<sizeof...( Layers ) - 1 - Is>( m_layers ).backward(), ... );
+	(void)( ( ( backward_one_inner<sizeof...( Layers ) - 1u - Is>(), 0 ), ... ) );
 }
 
 template <typename TensorN_t, typename Tensor2D_t, typename... Layers>
