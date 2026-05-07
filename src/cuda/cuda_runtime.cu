@@ -748,129 +748,6 @@ __global__ void transpose_fp8_kernel( fp8 const *in, fp8 *out, unsigned long lon
 	}
 }
 
-__global__ void gather_rows_float_kernel( float const * __restrict__ src, float * __restrict__ dst,
-                                        int const * __restrict__ row_indices, unsigned long long cols,
-                                        unsigned long long dst_rows )
-{
-	unsigned long long const total = dst_rows * cols;
-	unsigned long long const idx = static_cast<unsigned long long>( blockIdx.x ) * blockDim.x
-	                             + threadIdx.x;
-	unsigned long long const stride = static_cast<unsigned long long>( blockDim.x ) * gridDim.x;
-	for ( unsigned long long flat = idx; flat < total; flat += stride ) {
-		unsigned long long const r = flat / cols;
-		unsigned long long const c = flat % cols;
-		int const src_row = row_indices[r];
-		dst[flat] = src[static_cast<unsigned long long>( src_row ) * cols + c];
-	}
-}
-
-__global__ void gather_rows_fp8_kernel( fp8 const * __restrict__ src, fp8 * __restrict__ dst,
-                                       int const * __restrict__ row_indices, unsigned long long cols,
-                                       unsigned long long dst_rows )
-{
-	unsigned long long const total = dst_rows * cols;
-	unsigned long long const idx = static_cast<unsigned long long>( blockIdx.x ) * blockDim.x
-	                             + threadIdx.x;
-	unsigned long long const stride = static_cast<unsigned long long>( blockDim.x ) * gridDim.x;
-	for ( unsigned long long flat = idx; flat < total; flat += stride ) {
-		unsigned long long const r = flat / cols;
-		unsigned long long const c = flat % cols;
-		int const src_row = row_indices[r];
-		dst[flat] = src[static_cast<unsigned long long>( src_row ) * cols + c];
-	}
-}
-
-cudaError_t cuda_gather_rows_float( float const *src, float *dst, std::size_t src_rows, std::size_t cols,
-                                    int const *indices_host, std::size_t row_indices_src,
-                                    std::size_t row_indices_size )
-{
-	CudaOpSyncGuard const _cuda_op_sync;
-	(void)src_rows;
-	if ( row_indices_size == 0u || cols == 0u ) {
-		return cudaSuccess;
-	}
-	if ( src == nullptr || dst == nullptr || indices_host == nullptr ) {
-		return cudaErrorInvalidValue;
-	}
-	int *d_indices = nullptr;
-	cudaError_t err = cudaMalloc( &d_indices, row_indices_size * sizeof( int ) );
-	if ( err != cudaSuccess ) {
-		return err;
-	}
-	err = cudaMemcpy( d_indices, indices_host + row_indices_src, row_indices_size * sizeof( int ),
-	                  cudaMemcpyHostToDevice );
-	if ( err != cudaSuccess ) {
-		cudaFree( d_indices );
-		return err;
-	}
-	unsigned long long const total = static_cast<unsigned long long>( row_indices_size )
-	                               * static_cast<unsigned long long>( cols );
-	unsigned int const block_size = 256u;
-	unsigned long long const blocks64 = ( total + static_cast<unsigned long long>( block_size ) - 1ULL )
-	                                  / static_cast<unsigned long long>( block_size );
-	unsigned int grid = static_cast<unsigned int>( std::min( blocks64, 65535ull ) );
-	if ( grid < 1u ) {
-		grid = 1u;
-	}
-	gather_rows_float_kernel<<<grid, block_size>>>( src, dst, d_indices,
-	    static_cast<unsigned long long>( cols ),
-	    static_cast<unsigned long long>( row_indices_size ) );
-	err = cudaGetLastError();
-	if ( err != cudaSuccess ) {
-		cudaFree( d_indices );
-		return err;
-	}
-	// err = cudaDeviceSynchronize();
-	err = cudaSuccess;
-	cudaFree( d_indices );
-	return err;
-}
-
-cudaError_t cuda_gather_rows_fp8( fp8 const *src, fp8 *dst, std::size_t src_rows, std::size_t cols,
-                                  int const *indices_host, std::size_t row_indices_src,
-                                  std::size_t row_indices_size )
-{
-	CudaOpSyncGuard const _cuda_op_sync;
-	(void)src_rows;
-	if ( row_indices_size == 0u || cols == 0u ) {
-		return cudaSuccess;
-	}
-	if ( src == nullptr || dst == nullptr || indices_host == nullptr ) {
-		return cudaErrorInvalidValue;
-	}
-	int *d_indices = nullptr;
-	cudaError_t err = cudaMalloc( &d_indices, row_indices_size * sizeof( int ) );
-	if ( err != cudaSuccess ) {
-		return err;
-	}
-	err = cudaMemcpy( d_indices, indices_host + row_indices_src, row_indices_size * sizeof( int ),
-	                  cudaMemcpyHostToDevice );
-	if ( err != cudaSuccess ) {
-		cudaFree( d_indices );
-		return err;
-	}
-	unsigned long long const total = static_cast<unsigned long long>( row_indices_size )
-	                               * static_cast<unsigned long long>( cols );
-	unsigned int const block_size = 256u;
-	unsigned long long const blocks64 = ( total + static_cast<unsigned long long>( block_size ) - 1ULL )
-	                                  / static_cast<unsigned long long>( block_size );
-	unsigned int grid = static_cast<unsigned int>( std::min( blocks64, 65535ull ) );
-	if ( grid < 1u ) {
-		grid = 1u;
-	}
-	gather_rows_fp8_kernel<<<grid, block_size>>>( src, dst, d_indices,
-	    static_cast<unsigned long long>( cols ),
-	    static_cast<unsigned long long>( row_indices_size ) );
-	err = cudaGetLastError();
-	if ( err != cudaSuccess ) {
-		cudaFree( d_indices );
-		return err;
-	}
-	// err = cudaDeviceSynchronize();
-	cudaFree( d_indices );
-	return err;
-}
-
 cudaError_t cuda_transpose_float( float const *in, float *out, std::size_t rows, std::size_t cols )
 {
 	CudaOpSyncGuard const _cuda_op_sync;
@@ -1825,7 +1702,8 @@ cudaError_t cuda_mul_substract_float( float *data, float const *other, std::size
 	if ( data == nullptr || other == nullptr || count == 0 ) {
 		return cudaSuccess;
 	}
-	int const threads = 256;
+	// int const threads = 256;
+	int const threads = 128;
 	int const blocks  = static_cast<int>(
 	    ( count + static_cast<std::size_t>( threads ) - 1 ) / static_cast<std::size_t>( threads ) );
 	mul_substract_float_kernel<<<blocks, threads>>>( data, other,

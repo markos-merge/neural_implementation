@@ -3,7 +3,7 @@
 #include "neural_cuda_runtime.hpp"
 #include "linear_layer.hpp"
 #include "relu_layer.hpp"
-#include "sequential_nn.hpp"
+#include "sequential_nn_static.hpp"
 #include "sgd_optimizer.hpp"
 // #include "cuda_tensor.hpp"
 #include <filesystem>
@@ -20,7 +20,7 @@ namespace {
 using Tensor_t = neural::Tensor<float>;
 
 using CifarNN =
-    neural::SequentialNN<Tensor_t, neural::SoftmaxCrossEntropyLoss<Tensor_t>,
+    neural::SequentialNN_static<Tensor_t, neural::SoftmaxCrossEntropyLoss<Tensor_t>,
                          neural::LinearLayer<Tensor_t>, neural::ReLULayer<Tensor_t>,
                          neural::LinearLayer<Tensor_t>, neural::ReLULayer<Tensor_t>,
                          neural::LinearLayer<Tensor_t>>;

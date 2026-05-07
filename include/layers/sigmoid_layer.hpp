@@ -29,7 +29,11 @@ SigmoidLayer<Tensor>::SigmoidLayer() = default;
 template <typename Tensor >
 Tensor *SigmoidLayer<Tensor>::forward()
 {
-	m_output = this->getInput()->cwiseSigmoid();
+	Tensor const *inp = this->getInput();
+	if ( m_output.rows() != inp->rows() || m_output.cols() != inp->cols() ) {
+		m_output = Tensor( inp->rows(), inp->cols() );
+	}
+	inp->cwiseSigmoid( m_output );
 	*this->getOutput() = m_output;
 #if NEURAL_CUDA_ENABLED
 	if constexpr ( is_cuda_tensor_v<Tensor> ) {

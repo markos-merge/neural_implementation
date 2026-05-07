@@ -4,7 +4,7 @@
 
 #if NEURAL_CUDA_ENABLED && NEURAL_CUDNN_ENABLED
 
-#include "convolutional_box.hpp"
+#include "convolutional_box_static.hpp"
 #include "convolutional_layer.hpp"
 #include "cross_entropy_softmax_loss.hpp"
 #include "cuda_tensor.hpp"
@@ -13,19 +13,19 @@
 #include "max_pool_layer.hpp"
 #include "neural_cuda_runtime.hpp"
 #include "relu_layer.hpp"
-#include "sequential_nn.hpp"
+#include "sequential_nn_static.hpp"
 #include "tensor.hpp"
 
 namespace {
 
-using neural::ConvolutionalBox;
+using neural::ConvolutionalBox_static;
 using neural::ConvolutionalLayer;
 using neural::CudaTensor;
 using neural::CudaTensor4;
 using neural::LinearLayer;
 using neural::MaxPoolLayer;
 using neural::ReLULayer;
-using neural::SequentialNN;
+using neural::SequentialNN_static;
 using neural::SoftmaxCrossEntropyLoss;
 using neural::Tensor;
 
@@ -39,12 +39,12 @@ constexpr int W = 8;
 constexpr std::size_t in_cols  = static_cast<std::size_t>( C * H * W );
 constexpr std::size_t n_logits = 3;
 
-using SmallBox = ConvolutionalBox<
+using SmallBox = ConvolutionalBox_static<
     TensorN_t, Tensor2D_t,
     ConvolutionalLayer<TensorN_t>, ReLULayer<TensorN_t>, MaxPoolLayer<TensorN_t>
 >;
 
-using SmallConvLinearNN = SequentialNN<
+using SmallConvLinearNN = SequentialNN_static<
     Tensor2D_t, SoftmaxCrossEntropyLoss<Tensor2D_t>, SmallBox, LinearLayer<Tensor2D_t>>;
 
 } // namespace

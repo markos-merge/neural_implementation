@@ -6,7 +6,7 @@
 #include "tensor.hpp"
 #include "neural_cuda_runtime.hpp"
 #include "relu_layer.hpp"
-#include "sequential_nn.hpp"
+#include "sequential_nn_static.hpp"
 #include "sgd_optimizer.hpp"
 #include "tensor_like.hpp" // TensorLike (global concept)
 #include <catch2/catch_test_macros.hpp>
@@ -17,7 +17,7 @@ using neural::CudaTensor;
 using neural::LinearLayer;
 using neural::MSELoss;
 using neural::ReLULayer;
-using neural::SequentialNN;
+using neural::SequentialNN_static;
 using neural::SGDOptimizer;
 using neural::SoftmaxCrossEntropyLoss;
 using neural::Tensor;
@@ -157,7 +157,7 @@ TEST_CASE( "SequentialNN CudaTensor trainStep MSE zero for identity", "[cuda][se
 		SKIP( "No CUDA device available" );
 	}
 	auto linear = make_identity_linear_cuda( 2 );
-	SequentialNN<CudaTensor<float>, MSELoss<CudaTensor<float>>, LinearLayer<CudaTensor<float>>> nn(
+	SequentialNN_static<CudaTensor<float>, MSELoss<CudaTensor<float>>, LinearLayer<CudaTensor<float>>> nn(
 	    linear );
 
 	std::vector<float> x_data = { 1.0f, 2.0f };
@@ -175,7 +175,7 @@ TEST_CASE( "SequentialNN CudaTensor trainStep softmax CE matches standalone", "[
 		SKIP( "No CUDA device available" );
 	}
 	auto linear = make_identity_linear_cuda( 3 );
-	SequentialNN<CudaTensor<float>, SoftmaxCrossEntropyLoss<CudaTensor<float>>,
+	SequentialNN_static<CudaTensor<float>, SoftmaxCrossEntropyLoss<CudaTensor<float>>,
 	             LinearLayer<CudaTensor<float>>>
 	    nn( linear );
 
@@ -197,7 +197,7 @@ TEST_CASE( "SGDOptimizer CudaTensor train runs", "[cuda][sgd_optimizer]" )
 		SKIP( "No CUDA device available" );
 	}
 	using SimpleNN =
-	    SequentialNN<CudaTensor<float>, MSELoss<CudaTensor<float>>, LinearLayer<CudaTensor<float>>>;
+	    SequentialNN_static<CudaTensor<float>, MSELoss<CudaTensor<float>>, LinearLayer<CudaTensor<float>>>;
 	auto linear = LinearLayer<CudaTensor<float>>( 1 );
 	SimpleNN nn( linear );
 	SGDOptimizer<CudaTensor<float>, SimpleNN> opt( nn );
@@ -219,7 +219,7 @@ TEST_CASE( "SGDOptimizer CudaTensor assignTensorAsRow batching", "[cuda][sgd_opt
 		SKIP( "No CUDA device available" );
 	}
 	using SimpleNN =
-	    SequentialNN<CudaTensor<float>, MSELoss<CudaTensor<float>>, LinearLayer<CudaTensor<float>>>;
+	    SequentialNN_static<CudaTensor<float>, MSELoss<CudaTensor<float>>, LinearLayer<CudaTensor<float>>>;
 	auto linear = LinearLayer<CudaTensor<float>>( 1 );
 	SimpleNN nn( linear );
 

@@ -15,7 +15,7 @@ void run_conv_demo_cuda()
 #include "cifar10_loader.hpp"
 #include "image_processing/image_augmentation.hpp"
 #include "metrics.hpp"
-#include "convolutional_box.hpp"
+#include "convolutional_box_static.hpp"
 #include "convolutional_layer.hpp"
 #include "cross_entropy_softmax_loss.hpp"
 #include "cuda_tensor.hpp"
@@ -31,7 +31,7 @@ void run_conv_demo_cuda()
 #include "momentum_sgd_optimizer.hpp"
 #include "cosine_scheduling.hpp"
 #include "training_epoch_progress_reporter.hpp"
-#include "sequential_nn.hpp"
+#include "sequential_nn_static.hpp"
 #include "tensor.hpp"
 #include <omp.h>
 #include <cstdint>
@@ -40,7 +40,6 @@ void run_conv_demo_cuda()
 #include <random>
 #include <memory>
 #include <iomanip>
-#include <string>
 
 namespace {
 
@@ -58,7 +57,7 @@ using TensorN_t  = neural::CudaTensor4<float>;
 
 // Exact layer order from https://github.com/geifmany/cifar-vgg/blob/master/cifar10vgg.py
 // \c build_model(): Conv→ReLU→BN, Keras \c Dropout(p) → \c DropoutLayer(1-p) (inverted dropout).
-using ConvBox_t = neural::ConvolutionalBox<
+using ConvBox_t = neural::ConvolutionalBox_static<
     TensorN_t, Tensor2D_t,
     neural::ConvolutionalLayer<TensorN_t>, neural::ReLULayer<TensorN_t>,
     neural::BatchNormLayer<TensorN_t>, neural::DropoutLayer<TensorN_t>,
@@ -88,7 +87,7 @@ using ConvBox_t = neural::ConvolutionalBox<
     neural::BatchNormLayer<TensorN_t>, neural::MaxPoolLayer<TensorN_t>,
     neural::DropoutLayer<TensorN_t>>;
 
-using ConvNN_t = neural::SequentialNN<
+using ConvNN_t = neural::SequentialNN_static<
     Tensor2D_t,
     neural::SoftmaxCrossEntropyLoss<Tensor2D_t>,
     ConvBox_t,

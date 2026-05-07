@@ -55,7 +55,10 @@ TensorN_t *MaxPoolLayer<TensorN_t>::forward()
 	}
 
 	if ( this->getOutput()->shape() != output_shape ) {
-		*this->getOutput() = TensorN_t( output_shape );
+		this->getOutput()->throw_if_non_owning_realloc(
+		    "MaxPoolLayer::forward: cannot reallocate non-owning output" );
+		TensorN_t const fresh( output_shape );
+		*this->getOutput() = fresh;
 	}
 
 #if NEURAL_CUDNN_ENABLED
@@ -79,7 +82,10 @@ template <typename TensorN_t>
 TensorN_t *MaxPoolLayer<TensorN_t>::backward()
 {
 	if ( this->getGradOutput()->shape() != this->getInput()->shape() ) {
-		*this->getGradOutput() = TensorN_t( this->getInput()->shape() );
+		this->getGradOutput()->throw_if_non_owning_realloc(
+		    "MaxPoolLayer::backward: cannot reallocate non-owning grad output" );
+		TensorN_t const fresh( this->getInput()->shape() );
+		*this->getGradOutput() = fresh;
 	}
 
 #if NEURAL_CUDNN_ENABLED

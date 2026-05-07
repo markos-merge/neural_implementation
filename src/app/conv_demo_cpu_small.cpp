@@ -4,7 +4,7 @@
 #include "image_processing/image_augmentation.hpp"
 #include "metrics.hpp"
 #include "batch_norm_1d_layer.hpp"
-#include "convolutional_box.hpp"
+#include "convolutional_box_static.hpp"
 #include "convolutional_layer.hpp"
 #include "cross_entropy_softmax_loss.hpp"
 #include "dropout_layer.hpp"
@@ -12,7 +12,7 @@
 #include "max_pool_layer.hpp"
 #include "momentum_sgd_optimizer.hpp"
 #include "relu_layer.hpp"
-#include "sequential_nn.hpp"
+#include "sequential_nn_static.hpp"
 #include "tensor.hpp"
 #include "tensor_n.hpp"
 #include <cmath>
@@ -41,7 +41,7 @@ float const kHeadDrop1 = 1.f;
 // CPU im2col uses valid 3×3 (H' = H − 2), so we cannot place 3×3 on 2×2 maps. After three
 // stride-2 pools we land at 2×2; two 1×1 convs expand/mix to 128 channels (flat 512) like the
 // CUDA "small" head, without invalid geometry.
-using SmallConvBox_t = neural::ConvolutionalBox<
+using SmallConvBox_t = neural::ConvolutionalBox_static<
     TensorN_t, Tensor2D_t,
     neural::ConvolutionalLayer<TensorN_t>, neural::BatchNormLayer<TensorN_t>,
     neural::ReLULayer<TensorN_t>, neural::MaxPoolLayer<TensorN_t>,
@@ -53,7 +53,7 @@ using SmallConvBox_t = neural::ConvolutionalBox<
     neural::ReLULayer<TensorN_t>, neural::DropoutLayer<TensorN_t>,
     neural::ConvolutionalLayer<TensorN_t>, neural::ReLULayer<TensorN_t>, neural::DropoutLayer<TensorN_t>>;
 
-using SmallConvNN_t = neural::SequentialNN<
+using SmallConvNN_t = neural::SequentialNN_static<
     Tensor2D_t, neural::SoftmaxCrossEntropyLoss<Tensor2D_t>, SmallConvBox_t,
     neural::LinearLayer<Tensor2D_t>, neural::BatchNorm1dLayer<Tensor2D_t>,
     neural::ReLULayer<Tensor2D_t>, neural::DropoutLayer<Tensor2D_t>,

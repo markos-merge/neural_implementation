@@ -124,7 +124,10 @@ TensorN_t *BatchNormLayer<TensorN_t>::forward()
 	}
 	
 	if( this->getOutput()->shape() != this->getInput()->shape() ) {
-		*this->getOutput() = TensorN_t( this->getInput()->shape() );
+		this->getOutput()->throw_if_non_owning_realloc(
+		    "BatchNormLayer::forward: cannot reallocate non-owning output" );
+		TensorN_t const fresh( this->getInput()->shape() );
+		*this->getOutput() = fresh;
 		is_first_forward = true;
 	}
 
@@ -145,7 +148,10 @@ template <typename TensorN_t>
 TensorN_t *BatchNormLayer<TensorN_t>::backward()
 {
 	if( this->getGradOutput()->shape() != this->getGradInput()->shape() ) {
-		*this->getGradOutput() = TensorN_t( this->getGradInput()->shape() );
+		this->getGradOutput()->throw_if_non_owning_realloc(
+		    "BatchNormLayer::backward: cannot reallocate non-owning grad output" );
+		TensorN_t const fresh( this->getGradInput()->shape() );
+		*this->getGradOutput() = fresh;
 	}
 
 	if( this->m_grad_beta.size() != this->getGradInput()->shape()[1] ) {

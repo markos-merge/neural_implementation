@@ -6,7 +6,7 @@
 #include "mse_loss.hpp"
 #include "neural_cuda_runtime.hpp"
 #include "relu_layer.hpp"
-#include "sequential_nn.hpp"
+#include "sequential_nn_static.hpp"
 #include "tensor.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -30,7 +30,7 @@
 using neural::LinearLayer;
 using neural::MSELoss;
 using neural::ReLULayer;
-using neural::SequentialNN;
+using neural::SequentialNN_static;
 using neural::Tensor;
 using Catch::Matchers::WithinAbs;
 
@@ -148,7 +148,7 @@ TEST_CASE( "PyTorch ref tiny MLP forward (CPU)", "[pytorch_reference][cpu]" )
 	LinearLayer<Tensor<float>> fc0( W0, B0 );
 	ReLULayer<Tensor<float>>      relu;
 	LinearLayer<Tensor<float>>     fc1( W1, B1 );
-	SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>,
+	SequentialNN_static<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>,
 	             ReLULayer<Tensor<float>>, LinearLayer<Tensor<float>>>
 	    nn( fc0, relu, fc1 );
 
@@ -187,7 +187,7 @@ TEST_CASE( "PyTorch ref tiny MLP forward (CUDA)", "[pytorch_reference][cuda]" )
 	LinearLayer<neural::CudaTensor<T>> fc0( W0, B0 );
 	ReLULayer<neural::CudaTensor<T>>    relu;
 	LinearLayer<neural::CudaTensor<T>>  fc1( W1, B1 );
-	SequentialNN<neural::CudaTensor<T>, MSELoss<neural::CudaTensor<T>>,
+	SequentialNN_static<neural::CudaTensor<T>, MSELoss<neural::CudaTensor<T>>,
 	             LinearLayer<neural::CudaTensor<T>>, ReLULayer<neural::CudaTensor<T>>,
 	             LinearLayer<neural::CudaTensor<T>>>
 	    nn( fc0, relu, fc1 );
@@ -224,7 +224,7 @@ TEST_CASE( "PyTorch ref tiny MLP backward MSE (CPU)", "[pytorch_reference][cpu][
 	Tensor<float> W1( 3, 2, w1.begin(), w1.end() );
 	Tensor<float> B1( 2, 1, b1.begin(), b1.end() );
 
-	SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>,
+	SequentialNN_static<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>,
 	             ReLULayer<Tensor<float>>, LinearLayer<Tensor<float>>>
 	    nn( LinearLayer<Tensor<float>>( W0, B0 ),
 	        ReLULayer<Tensor<float>>(),
@@ -276,7 +276,7 @@ TEST_CASE( "PyTorch ref tiny MLP backward MSE (CUDA)", "[pytorch_reference][cuda
 	neural::CudaTensor<T> W1( 3, 2, w1.begin(), w1.end() );
 	neural::CudaTensor<T> B1( 2, 1, b1.begin(), b1.end() );
 
-	SequentialNN<neural::CudaTensor<T>, MSELoss<neural::CudaTensor<T>>,
+	SequentialNN_static<neural::CudaTensor<T>, MSELoss<neural::CudaTensor<T>>,
 	             LinearLayer<neural::CudaTensor<T>>, ReLULayer<neural::CudaTensor<T>>,
 	             LinearLayer<neural::CudaTensor<T>>>
 	    nn( LinearLayer<neural::CudaTensor<T>>( W0, B0 ),

@@ -41,7 +41,8 @@
 			"binaryDir": "${sourceDir}/build_debug_cuda",
 			"cacheVariables": {
 				"CMAKE_BUILD_TYPE": "Debug",
-				"NEURAL_ENABLE_CUDA": "ON"
+				"NEURAL_ENABLE_CUDA": "ON",
+				"ENABLE_OPENMP": "ON"
 			}
 		},
 		{
@@ -51,7 +52,8 @@
 			"binaryDir": "${sourceDir}/build_release_cuda",
 			"cacheVariables": {
 				"CMAKE_BUILD_TYPE": "Release",
-				"NEURAL_ENABLE_CUDA": "ON"
+				"NEURAL_ENABLE_CUDA": "ON",
+				"ENABLE_OPENMP": "ON"
 			}
 		},
 		{
@@ -61,7 +63,8 @@
 			"binaryDir": "${sourceDir}/build_relwithdebinfo_cuda",
 			"cacheVariables": {
 				"CMAKE_BUILD_TYPE": "RelWithDebInfo",
-				"NEURAL_ENABLE_CUDA": "ON"
+				"NEURAL_ENABLE_CUDA": "ON",
+				"ENABLE_OPENMP": "ON"
 			}
 		}
 	],

@@ -3,7 +3,7 @@
 #include "mnist_loader.hpp"
 #include "weight_debug.hpp"
 #include "relu_layer.hpp"
-#include "sequential_nn.hpp"
+#include "sequential_nn_static.hpp"
 #include "sgd_optimizer.hpp"
 #include "tensor.hpp"
 #include "training_progress_bar.hpp"
@@ -18,7 +18,7 @@ namespace {
 
 using Tensor_t = neural::Tensor<float>;
 
-using NN = neural::SequentialNN<Tensor_t, neural::SoftmaxCrossEntropyLoss<Tensor_t>,
+using NN = neural::SequentialNN_static<Tensor_t, neural::SoftmaxCrossEntropyLoss<Tensor_t>,
                                 neural::LinearLayer<Tensor_t>, neural::ReLULayer<Tensor_t>,
                                 neural::LinearLayer<Tensor_t>, neural::ReLULayer<Tensor_t>,
                                 neural::LinearLayer<Tensor_t>>;

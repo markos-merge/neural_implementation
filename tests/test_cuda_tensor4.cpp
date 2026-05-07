@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <numeric>
 #include <vector>
+#include <stdexcept>
 
 #if NEURAL_CUDNN_ENABLED
 #include "cuda_tensor_n.hpp"
@@ -276,6 +277,78 @@ TEST_CASE( "CudaTensor4 im2ColConvolution matches host reference (spot checks)",
 		REQUIRE_THAT( ref, WithinAbs( s.expected, eps ) );
 		REQUIRE_THAT( read4( output, 0, 0, s.y, s.x ), WithinAbs( s.expected, eps ) );
 	}
+}
+
+TEST_CASE( "CudaTensor4 pointer ctor own=false aliases device storage", "[cuda_tensor4][view]" )
+{
+	if ( !neural::cuda_runtime_ready() ) {
+		SKIP( "No CUDA device available" );
+	}
+	std::array<std::size_t, 4> const sh = { 1u, 1u, 2u, 2u };
+	CudaTensor4<float> src( sh, 1.f );
+	float *const raw = src.data();
+	CudaTensor4<float> view( raw, sh, false );
+	std::vector<float> const upd( 4u, 7.f );
+	src.assign( upd );
+	std::vector<float> const w = tensor4_to_host( view );
+	REQUIRE_THAT( w[0], WithinAbs( 7.f, eps ) );
+}
+
+TEST_CASE( "CudaTensor4 pointer ctor own=true copies device storage", "[cuda_tensor4][own]" )
+{
+	if ( !neural::cuda_runtime_ready() ) {
+		SKIP( "No CUDA device available" );
+	}
+	std::array<std::size_t, 4> const sh = { 1u, 1u, 2u, 2u };
+	CudaTensor4<float> src( sh, 2.f );
+	float *const raw = src.data();
+	CudaTensor4<float> dup( raw, sh, true );
+	(void)cudaMemset( raw, 0, 4u * sizeof( float ) );
+	std::vector<float> const w = tensor4_to_host( dup );
+	REQUIRE_THAT( w[0], WithinAbs( 2.f, eps ) );
+}
+
+TEST_CASE( "CudaTensor4 non-owning copy-assign requires matching shape", "[cuda_tensor4][view]" )
+{
+	if ( !neural::cuda_runtime_ready() ) {
+		SKIP( "No CUDA device available" );
+	}
+	float *d = nullptr;
+	REQUIRE( cudaMalloc( reinterpret_cast<void **>( &d ), 4u * sizeof( float ) ) == cudaSuccess );
+	std::array<std::size_t, 4> const sh = { 1u, 1u, 2u, 2u };
+	CudaTensor4<float> v( d, sh, false );
+	CudaTensor4<float> rhs( std::array<std::size_t, 4>{ 1u, 1u, 1u, 4u }, 1.f );
+	REQUIRE_THROWS_AS( v = rhs, std::invalid_argument );
+	(void)cudaFree( d );
+}
+
+TEST_CASE( "CudaTensor4 non-owning move-assign throws", "[cuda_tensor4][view]" )
+{
+	if ( !neural::cuda_runtime_ready() ) {
+		SKIP( "No CUDA device available" );
+	}
+	float *d = nullptr;
+	REQUIRE( cudaMalloc( reinterpret_cast<void **>( &d ), 4u * sizeof( float ) ) == cudaSuccess );
+	std::array<std::size_t, 4> const sh = { 1u, 1u, 2u, 2u };
+	CudaTensor4<float> v( d, sh, false );
+	CudaTensor4<float> rhs( sh, 1.f );
+	REQUIRE_THROWS_AS( v = std::move( rhs ), std::invalid_argument );
+	(void)cudaFree( d );
+}
+
+TEST_CASE( "CudaTensor4 elementwiseMultiply throws if non-owning out would resize", "[cuda_tensor4][view]" )
+{
+	if ( !neural::cuda_runtime_ready() ) {
+		SKIP( "No CUDA device available" );
+	}
+	std::array<std::size_t, 4> const sh = { 1u, 1u, 2u, 2u };
+	CudaTensor4<float> a( sh, 2.f );
+	CudaTensor4<float> b( sh, 3.f );
+	float *d = nullptr;
+	REQUIRE( cudaMalloc( reinterpret_cast<void **>( &d ), sizeof( float ) ) == cudaSuccess );
+	CudaTensor4<float> out( d, std::array<std::size_t, 4>{ 1u, 1u, 1u, 1u }, false );
+	REQUIRE_THROWS_AS( a.elementwiseMultiply( b, out ), std::invalid_argument );
+	(void)cudaFree( d );
 }
 
 #endif // NEURAL_CUDNN_ENABLED

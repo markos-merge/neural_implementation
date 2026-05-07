@@ -1,12 +1,12 @@
 #include "conv_demo.hpp"
 #include "cifar10_loader.hpp"
-#include "convolutional_box.hpp"
+#include "convolutional_box_static.hpp"
 #include "convolutional_layer.hpp"
 #include "cross_entropy_softmax_loss.hpp"
 #include "linear_layer.hpp"
 #include "max_pool_layer.hpp"
 #include "relu_layer.hpp"
-#include "sequential_nn.hpp"
+#include "sequential_nn_static.hpp"
 #include "sgd_optimizer.hpp"
 #include "tensor.hpp"
 #include "tensor_n.hpp"
@@ -31,7 +31,7 @@ using TensorN_t  = neural::TensorN<4, float>;
 //   ReLU
 //   MaxPool(2, 2)   : (N, 32, 13, 13) → (N, 32, 6, 6)     [(13-2)/2+1 = 6]
 // Flattened conv tail width is inferred inside ConvolutionalBox from layer geometry.
-using ConvBox_t = neural::ConvolutionalBox<
+using ConvBox_t = neural::ConvolutionalBox_static<
     TensorN_t, Tensor2D_t,
     neural::ConvolutionalLayer<TensorN_t>,
     neural::ReLULayer<TensorN_t>,
@@ -40,7 +40,7 @@ using ConvBox_t = neural::ConvolutionalBox<
     neural::ReLULayer<TensorN_t>,
     neural::MaxPoolLayer<TensorN_t>>;
 
-using ConvNN_t = neural::SequentialNN<
+using ConvNN_t = neural::SequentialNN_static<
     Tensor2D_t,
     neural::SoftmaxCrossEntropyLoss<Tensor2D_t>,
     ConvBox_t,

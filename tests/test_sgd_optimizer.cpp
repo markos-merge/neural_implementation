@@ -1,7 +1,7 @@
 #include "linear_layer.hpp"
 #include "mse_loss.hpp"
 #include "relu_layer.hpp"
-#include "sequential_nn.hpp"
+#include "sequential_nn_static.hpp"
 #include "momentum_sgd_optimizer.hpp"
 #include "sgd_optimizer.hpp"
 #include "tensor.hpp"
@@ -15,7 +15,7 @@ using neural::MSELoss;
 using neural::ReLULayer;
 using neural::MomentumSGDOptimizer;
 using neural::SGDOptimizer;
-using neural::SequentialNN;
+using neural::SequentialNN_static;
 using neural::Tensor;
 
 static_assert( TensorLike<Tensor<float>> );
@@ -26,13 +26,13 @@ namespace {
 
 constexpr float eps = 1e-5f;
 
-using NN = SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>, ReLULayer<Tensor<float>>, LinearLayer<Tensor<float>>>;
+using NN = SequentialNN_static<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>, ReLULayer<Tensor<float>>, LinearLayer<Tensor<float>>>;
 
 } // namespace
 
 TEST_CASE( "SequentialNN trainStep with batch works", "[sgd_optimizer][smoke]" )
 {
-	using SimpleNN = SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
+	using SimpleNN = SequentialNN_static<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
 	auto linear = LinearLayer<Tensor<float>>( 1 );
 	SimpleNN nn( linear );
 
@@ -45,7 +45,7 @@ TEST_CASE( "SequentialNN trainStep with batch works", "[sgd_optimizer][smoke]" )
 
 TEST_CASE( "Manual batch build and trainStep", "[sgd_optimizer][smoke]" )
 {
-	using SimpleNN = SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
+	using SimpleNN = SequentialNN_static<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
 	auto linear = LinearLayer<Tensor<float>>( 1 );
 	SimpleNN nn( linear );
 
@@ -62,7 +62,7 @@ TEST_CASE( "Manual batch build and trainStep", "[sgd_optimizer][smoke]" )
 
 TEST_CASE( "SGDOptimizer constructor and train runs without crash", "[sgd_optimizer][smoke]" )
 {
-	using SimpleNN = SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
+	using SimpleNN = SequentialNN_static<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
 	auto linear = LinearLayer<Tensor<float>>( 1 );
 	SimpleNN nn( linear );
 
@@ -82,7 +82,7 @@ TEST_CASE( "SGDOptimizer constructor and train runs without crash", "[sgd_optimi
 
 TEST_CASE( "MomentumSGDOptimizer constructor and train runs without crash", "[sgd_optimizer][smoke]" )
 {
-	using SimpleNN = SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
+	using SimpleNN = SequentialNN_static<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
 	auto linear = LinearLayer<Tensor<float>>( 1 );
 	SimpleNN nn( linear );
 
@@ -102,7 +102,7 @@ TEST_CASE( "MomentumSGDOptimizer constructor and train runs without crash", "[sg
 
 TEST_CASE( "MomentumSGDOptimizer with Nesterov runs without crash", "[sgd_optimizer][smoke]" )
 {
-	using SimpleNN = SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
+	using SimpleNN = SequentialNN_static<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
 	auto linear = LinearLayer<Tensor<float>>( 1 );
 	SimpleNN nn( linear );
 
@@ -143,7 +143,7 @@ TEST_CASE( "MomentumSGDOptimizer with zero momentum matches SGDOptimizer", "[sgd
 	Tensor<float> w_mom( 2, 1, w_init.begin(), w_init.end() );
 	Tensor<float> b_mom( 1, 1, b_init.begin(), b_init.end() );
 
-	using SimpleNN = SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
+	using SimpleNN = SequentialNN_static<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
 	SimpleNN nn_sgd( LinearLayer<Tensor<float>>( w_sgd, b_sgd ) );
 	SimpleNN nn_mom( LinearLayer<Tensor<float>>( w_mom, b_mom ) );
 
@@ -182,7 +182,7 @@ TEST_CASE( "MomentumSGDOptimizer training reduces loss on simple regression", "[
 	std::vector<float> const w_data = { 0.1f, 0.2f };
 	std::vector<float> const b_data = { 0.3f };
 
-	using SimpleNN = SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
+	using SimpleNN = SequentialNN_static<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
 	auto make_nn = [&]() {
 		Tensor<float> w( 2, 1, w_data.begin(), w_data.end() );
 		Tensor<float> b( 1, 1, b_data.begin(), b_data.end() );
@@ -232,7 +232,7 @@ TEST_CASE( "SGDOptimizer training reduces loss on simple regression", "[sgd_opti
 	Tensor<float> bias( 1, 1, b_data.begin(), b_data.end() );
 
 	auto linear = LinearLayer<Tensor<float>>( weights, bias );
-	using SimpleNN = SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
+	using SimpleNN = SequentialNN_static<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
 	SimpleNN nn( linear );
 
 	SGDOptimizer<Tensor<float>, SimpleNN> opt( nn );
@@ -257,7 +257,7 @@ TEST_CASE( "SGDOptimizer training reduces loss on simple regression", "[sgd_opti
 
 TEST_CASE( "SGDOptimizer updates parameters after backward", "[sgd_optimizer][update]" )
 {
-	using SimpleNN = SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
+	using SimpleNN = SequentialNN_static<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
 	auto linear = LinearLayer<Tensor<float>>( 1 );
 	SimpleNN nn( linear );
 

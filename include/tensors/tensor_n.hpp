@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <cmath>
 #include <limits>
 #include <vector>
@@ -17,6 +18,18 @@
 #endif
 
 namespace neural {
+
+/// Validates \p v has length \p Rank and returns it as row-major extents.
+template <std::size_t Rank>
+inline std::array<std::size_t, Rank> nn_shape_vec_to_fixed( std::vector<std::size_t> const &v )
+{
+	if ( v.size() != Rank ) {
+		throw std::invalid_argument( "tensor shape vector size must equal static rank" );
+	}
+	std::array<std::size_t, Rank> out{};
+	std::copy( v.begin(), v.end(), out.begin() );
+	return out;
+}
 
 template <typename T>
 class Tensor;
@@ -46,12 +59,24 @@ class TensorN
 		template <std::random_access_iterator It>
 		TensorN( std::array<std::size_t, rank> shape, It begin, It end );
 		explicit TensorN( std::vector< value_type > const &data, std::array< std::size_t, rank > const &shape );
+		/// Wrap \p buffer with given \p shape; \p own \c false = non-owning view (storage not freed here).
+		/// If \p own is \c true, copies \p buffer into owned \c std::vector storage (caller keeps \p buffer).
+		TensorN( value_type *buffer, std::array<std::size_t, rank> shape, bool own ) noexcept;
+		/// Same as `TensorN(buffer, array, own)`; \p shape must have length \c rank.
+		TensorN( value_type *buffer, std::vector<std::size_t> const &shape, bool own );
 		
 		TensorN( TensorN const &other );
 		TensorN( TensorN &&other ) noexcept;
 		TensorN &operator=( TensorN const &other );
-		TensorN &operator=( TensorN &&other ) noexcept;
+		TensorN &operator=( TensorN &&other );
 		~TensorN() = default;
+
+		void throw_if_non_owning_realloc( char const *context ) const
+		{
+			if ( !m_own ) {
+				throw std::invalid_argument( context );
+			}
+		}
 		
 		value_type *data() noexcept;
 		value_type const *data() const noexcept;
@@ -81,7 +106,7 @@ class TensorN
 		void addElementwise( std::array< std::size_t, rank > const &indices, value_type value );
 		void assign( std::array< std::size_t, rank > const &indices, value_type value );
 		void assign( std::vector< value_type > const &data );
-		void assign( value_type const *data, std::size_t size );
+		void assign( value_type const *src, std::size_t size );
 
 		template< std::size_t other_rank >
 		void assign( std::array< std::size_t, rank > const &from_slice, std::array< std::size_t, rank > const &to_slice, TensorN< other_rank, T > const &tensor );
@@ -128,6 +153,8 @@ class TensorN
 	private:
 		std::array<std::size_t, rank> m_shape{};
 		std::array<std::size_t, rank> m_strides{};
+		value_type *m_view = nullptr;
+		bool m_own = true;
 };
 
 template < std::size_t rank, typename T >
@@ -142,6 +169,8 @@ TensorN<rank, T>::TensorN( std::array<std::size_t, rank> shape )
 {
 	std::size_t const size = std::accumulate( shape.begin(), shape.end(), 1, std::multiplies<>() );
 	m_data.resize( size, 0. );
+	m_view = nullptr;
+	m_own = true;
 	recomputeStrides();
 }
 
@@ -151,6 +180,8 @@ TensorN<rank, T>::TensorN( std::array<std::size_t, rank> shape, value_type value
 {
 	std::size_t const size = std::accumulate( shape.begin(), shape.end(), 1, std::multiplies<>() );
 	m_data.resize( size, value );
+	m_view = nullptr;
+	m_own = true;
 	recomputeStrides();
 }
 
@@ -166,6 +197,8 @@ TensorN<rank, T>::TensorN( std::array<std::size_t, rank> shape, It begin, It end
 	}
 	m_data.reserve( size );
 	std::copy( begin, end, std::back_inserter( m_data ) );
+	m_view = nullptr;
+	m_own = true;
 	recomputeStrides();
 }
 
@@ -180,40 +213,113 @@ TensorN<rank, T>::TensorN( std::vector< value_type > const &data, std::array<std
 	}
 
 	m_data = data;
+	m_view = nullptr;
+	m_own = true;
 	recomputeStrides();
+}
+
+template < std::size_t rank, typename T >
+TensorN<rank, T>::TensorN( value_type *buffer, std::array<std::size_t, rank> shape, bool own ) noexcept
+	: m_shape( shape )
+{
+	std::size_t const n = std::accumulate( shape.begin(), shape.end(), 1, std::multiplies<>() );
+	if ( own ) {
+		m_own = true;
+		m_view = nullptr;
+		m_data.resize( n );
+		if ( n > 0U && buffer != nullptr ) {
+			std::copy( buffer, buffer + n, m_data.begin() );
+		}
+	} else {
+		m_own = false;
+		m_view = buffer;
+		m_data.clear();
+	}
+	recomputeStrides();
+}
+
+template < std::size_t rank, typename T >
+TensorN<rank, T>::TensorN( value_type *buffer, std::vector<std::size_t> const &shape, bool own )
+	: TensorN( buffer, nn_shape_vec_to_fixed<rank>( shape ), own )
+{
 }
 
 template < std::size_t rank, typename T >
 TensorN<rank, T>::TensorN( TensorN const &other )
 	: m_shape( other.m_shape )
 	, m_strides( other.m_strides )
+	, m_view( nullptr )
+	, m_own( true )
 {
-	m_data = other.m_data;
+	m_data.assign( other.data(), other.data() + other.size() );
 }
 
 template < std::size_t rank, typename T >
 TensorN<rank, T>::TensorN( TensorN &&other ) noexcept
 	: m_shape( other.m_shape )
 	, m_strides( other.m_strides )
+	, m_own( other.m_own )
+	, m_view( other.m_view )
 {
-	m_data = std::move( other.m_data );
+	if ( other.m_own ) {
+		m_data = std::move( other.m_data );
+		m_view = nullptr;
+	} else {
+		m_data.clear();
+	}
+	other.m_view = nullptr;
+	other.m_own = true;
+	other.m_shape = {};
+	other.m_data.clear();
+	other.recomputeStrides();
 }
 
 template < std::size_t rank, typename T >
 TensorN<rank, T> &TensorN<rank, T>::operator=( TensorN const &other )
 {
-	m_shape = other.m_shape;
+	if ( m_own ) {
+		if ( size() != other.size() ) {
+			m_data.resize( other.size() );
+		}
+		std::copy( other.data(), other.data() + other.size(), m_data.begin() );
+		m_shape = other.m_shape;
+		m_strides = other.m_strides;
+		m_view = nullptr;
+		m_own = true;
+		return *this;
+	}
+	if ( m_shape != other.m_shape ) {
+		throw std::invalid_argument(
+		    "TensorN::operator=(TensorN const &): non-owning tensor requires matching shape" );
+	}
+	std::copy( other.data(), other.data() + other.size(), data() );
 	m_strides = other.m_strides;
-	m_data = other.m_data;
 	return *this;
 }
 
 template < std::size_t rank, typename T >
-TensorN<rank, T> &TensorN<rank, T>::operator=( TensorN &&other ) noexcept
+TensorN<rank, T> &TensorN<rank, T>::operator=( TensorN &&other )
 {
+	if ( this == &other ) {
+		return *this;
+	}
+	throw_if_non_owning_realloc(
+	    "TensorN::operator=(TensorN&&): cannot move-assign into a non-owning tensor" );
 	m_shape = other.m_shape;
 	m_strides = other.m_strides;
-	m_data = std::move( other.m_data );
+	m_own = other.m_own;
+	m_view = other.m_view;
+	if ( other.m_own ) {
+		m_data = std::move( other.m_data );
+		m_view = nullptr;
+	} else {
+		m_data.clear();
+	}
+	other.m_view = nullptr;
+	other.m_own = true;
+	other.m_shape = {};
+	other.m_data.clear();
+	other.recomputeStrides();
 	return *this;
 }
 
@@ -232,13 +338,13 @@ std::array<std::size_t, rank> TensorN<rank, T>::strides() const noexcept
 template < std::size_t rank, typename T >
 T *TensorN<rank, T>::data() noexcept
 {
-	return m_data.data();
+	return m_own ? m_data.data() : m_view;
 }
 
 template < std::size_t rank, typename T >
 T const *TensorN<rank, T>::data() const noexcept
 {
-	return m_data.data();
+	return m_own ? m_data.data() : m_view;
 }
 
 template < std::size_t rank, typename T >
@@ -261,7 +367,7 @@ void TensorN<rank, T>::recomputeStrides() noexcept
 template < std::size_t rank, typename T >
 T TensorN<rank, T>::operator()( std::array<std::size_t, rank> const &indices ) const
 {
-	return m_data[index( indices )];
+	return data()[index( indices )];
 }
 
 template< std::size_t rank, typename T >
@@ -310,13 +416,14 @@ void TensorN<rank, T>::swapAxes( std::array< std::size_t, rank > const &new_axes
 	}
 
 	if( output.shape() != new_shape ) {
+		output.throw_if_non_owning_realloc( "TensorN::swapAxes: cannot reallocate non-owning output" );
 		output = TensorN< rank, T >( new_shape );
 	}
 	
-	T *data = output.data();
+	T *out_data = output.data();
 	std::array< std::size_t, rank > &strides = output.m_strides;
 
-	loopIndicesParallel( {}, m_shape, [this, &new_axes, &strides, &data]( std::array<std::size_t, rank> const &indices ){
+	loopIndicesParallel( {}, m_shape, [this, &new_axes, &strides, &out_data]( std::array<std::size_t, rank> const &indices ){
 		std::size_t idx = 0;
 		std::size_t from_idx = 0;
 			for( std::size_t i = 0; i < rank; ++i ) {
@@ -324,7 +431,7 @@ void TensorN<rank, T>::swapAxes( std::array< std::size_t, rank > const &new_axes
 				from_idx += indices[i] * m_strides[i];
 			}
 
-			data[idx] = m_data[from_idx];
+			out_data[idx] = data()[from_idx];
 
 			return false;
 	} );
@@ -334,7 +441,7 @@ void TensorN<rank, T>::swapAxes( std::array< std::size_t, rank > const &new_axes
 template < std::size_t rank, typename T >
 void TensorN<rank, T>::assign( std::array< std::size_t, rank > const &indices, value_type value )
 {
-	m_data[index( indices )] = value;
+	data()[index( indices )] = value;
 }
 
 template < std::size_t rank, typename T >
@@ -344,17 +451,22 @@ void TensorN<rank, T>::assign( std::vector< value_type > const &data )
 	{
 		throw std::invalid_argument( "data size does not match shape" );
 	}
-	m_data = data;
+	if ( m_own ) {
+		m_data = data;
+		m_view = nullptr;
+	} else {
+		std::copy( data.begin(), data.end(), this->data() );
+	}
 }
 
 template < std::size_t rank, typename T >
-void TensorN<rank, T>::assign( value_type const *data, std::size_t size )
+void TensorN<rank, T>::assign( value_type const *src, std::size_t size )
 {
 	if( size != this->size() )
 	{
 		throw std::invalid_argument( "TensorN::assign(): size does not match tensor size" );
 	}
-	std::copy( data, data + size, m_data.begin() );
+	std::copy( src, src + size, this->data() );
 }
 
 namespace detail {
@@ -502,6 +614,7 @@ void TensorN<rank, T>::im2Col( std::array< std::size_t, 3 > const &kernel_shape,
 	std::array< std::size_t, 2 > output_shape{ kernel_shape[0] * kernel_shape[1] * kernel_shape[2], 
 		m_shape.front()*( m_shape[2] - 2*padding_i )*( m_shape[3] - 2*padding_j ) };
 	if( output.shape() != output_shape ) {
+		output.throw_if_non_owning_realloc( "TensorN::im2Col: cannot reallocate non-owning output" );
 		output = TensorN< 2, T >( output_shape );
 	}
 	
@@ -538,7 +651,7 @@ void TensorN<rank, T>::im2Col( std::array< std::size_t, 3 > const &kernel_shape,
 					    ( i - padding_i + kernel_row ) * rows_stride + j - padding_j +
 					    kernel_col;
 					output_data[cur_row * output_col_stride + output_col] =
-					    m_data[cur_im_index];
+					    data()[cur_im_index];
 				}
 			}
 		}
@@ -587,6 +700,8 @@ void TensorN<rank, T>::im2ColConvolution(
 	// GEMM fills row-major (C_out × N·H·W) = flat layout (C_out, N, H, W), not (N, C_out, H, W).
 	std::array< std::size_t, 4 > const cnhw_shape{ kernel.shape()[0], m_shape[0], H_out, W_out };
 	if( gemm_cnhw_layout.shape() != cnhw_shape ) {
+		gemm_cnhw_layout.throw_if_non_owning_realloc(
+		    "TensorN::im2ColConvolution: cannot reallocate non-owning gemm_cnhw_layout" );
 		gemm_cnhw_layout = TensorN< 4, T >( cnhw_shape );
 	}
 	kernel.multiply( im2col_tensor, false, gemm_cnhw_layout );
@@ -798,7 +913,7 @@ template< std::size_t rank, typename T >
 template <typename Generator>
 void TensorN< rank, T >::randomize( Generator &generator )
 {
-	std::generate( m_data.data(), m_data.data() + m_data.size(), generator );
+	std::generate( data(), data() + size(), generator );
 }
 
 template< std::size_t rank, typename T >
@@ -818,7 +933,7 @@ void TensorN< rank, T >::randomizeHe( std::size_t fan_in, std::uint64_t seed )
 	std::uniform_real_distribution<double> dis( -scale, scale );
 	auto generator = [&]() { return static_cast<T>( dis( gen ) ); };
 
-	std::generate( m_data.data(), m_data.data() + m_data.size(), generator );
+	std::generate( data(), data() + size(), generator );
 }
 
 template< std::size_t rank, typename T >
@@ -831,7 +946,7 @@ void TensorN< rank, T >::randomizePytorchDefault( std::size_t fan_in, std::uint6
 	std::mt19937_64 gen( seed );
 	std::uniform_real_distribution<double> dis( -inv_sqrt, inv_sqrt );
 	auto generator = [&]() { return static_cast<T>( dis( gen ) ); };
-	std::generate( m_data.data(), m_data.data() + m_data.size(), generator );
+	std::generate( data(), data() + size(), generator );
 }
 
 //different from reduceSum, this function reduces the tensor to a single dimension
@@ -840,18 +955,20 @@ void TensorN< rank, T >::reduceSumToDim( std::size_t axis, TensorN< 1, T > &outp
 {
 	std::size_t const output_size = m_shape[axis];
 	if( output.shape()[0] != output_size ) {
+		output.throw_if_non_owning_realloc( "TensorN::reduceSumToDim: cannot reallocate non-owning output" );
 		output = TensorN< 1, T >( { output_size } );
 	}
 	
 	if( axis == 0 ) {
-		T* data = output.data();
+		T *out_ptr = output.data();
 		std::size_t const stride = m_strides[0];
+		T const *const self_base = this->data();
 		
 		#if _OPENMP
 		#pragma omp parallel for schedule( static )
 		#endif
 		for( std::size_t i = 0; i < output.size(); ++i ) {
-			data[i] = std::accumulate( m_data.begin() + i*stride, m_data.begin() + (i+1)*stride, 0.0 );
+			out_ptr[i] = std::accumulate( self_base + i * stride, self_base + ( i + 1 ) * stride, 0.0 );
 		}
 	} else {
 		//todo: implement this
@@ -865,15 +982,17 @@ void TensorN< rank, T >::reduceSumToDim( std::size_t axis, TensorN< 4, T > &outp
 	std::size_t const output_size = m_shape[axis];
 	std::array< std::size_t, 4 > const out_shape{ 1, output_size, 1, 1 };
 	if( output.shape() != out_shape ) {
+		output.throw_if_non_owning_realloc( "TensorN::reduceSumToDim: cannot reallocate non-owning output" );
 		output = TensorN< 4, T >( out_shape );
 	}
 
 	if( axis == 0 ) {
-		T *data = output.data();
+		T *out_ptr = output.data();
 		std::size_t const stride = m_strides[0];
+		T const *const self_base = this->data();
 		for ( std::size_t i = 0; i < output_size; ++i ) {
-			data[i] = static_cast<T>(
-			    std::accumulate( m_data.begin() + i * stride, m_data.begin() + ( i + 1 ) * stride, 0.0 ) );
+			out_ptr[i] = static_cast<T>(
+			    std::accumulate( self_base + i * stride, self_base + ( i + 1 ) * stride, 0.0 ) );
 		}
 	} else {
 		// todo: implement this
@@ -891,6 +1010,7 @@ void multiply2DTensor( TensorN< rank, T > const &tensor_0, TensorN< rank, T > co
 	}
 	
 	if( *( output.shape().rbegin() + 1 ) != *( tensor_0.shape().rbegin() + 1 ) || *( output.shape().rbegin() ) != *( tensor_1.shape().rbegin() ) ) {
+		output.throw_if_non_owning_realloc( "multiply2DTensor: cannot reallocate non-owning output" );
 		std::array< std::size_t, rank > output_shape = tensor_0.shape();
 		output_shape[rank - 2] = *( output.shape().rbegin() + 1 );
 		output_shape[rank - 1] = *( output.shape().rbegin() );
@@ -913,6 +1033,7 @@ void TensorN< rank, T >::col2Im( std::array< std::size_t, 4 > const &kernel_shap
 {
 	// *this is the im2col matrix (rows = C_in*Kh*Kw, cols = N*H_out*W_out); layout matches im2Col().
 	if( output.shape() != original_shape ) {
+		output.throw_if_non_owning_realloc( "TensorN::col2Im: cannot reallocate non-owning output" );
 		output = TensorN< 4, T >( original_shape, 0. );
 	} else {
 		std::fill( output.data(), output.data() + output.size(), static_cast< T >( 0 ) );
@@ -944,7 +1065,7 @@ void TensorN< rank, T >::col2Im( std::array< std::size_t, 4 > const &kernel_shap
 							    { b, c, im_i - padding_i + i, im_j - padding_j + j } );
 							std::size_t const row = c * kernel_shape[2] * kernel_shape[3] +
 							                        i * kernel_shape[3] + j;
-							output_data[im_index] += m_data[row * col_stride + col_2d_index];
+							output_data[im_index] += data()[row * col_stride + col_2d_index];
 						}
 					}
 				}
@@ -956,14 +1077,15 @@ void TensorN< rank, T >::col2Im( std::array< std::size_t, 4 > const &kernel_shap
 template< std::size_t rank, typename T >
 void TensorN< rank, T >::addElementwise( std::array< std::size_t, rank > const &indices, value_type value )
 {
-	m_data[index( indices )] += value;
+	data()[index( indices )] += value;
 }
 
 template< std::size_t rank, typename T >
 TensorN<rank, T> &TensorN<rank, T>::operator*=( TensorN const &other )
 {
-	for ( std::size_t i = 0; i < m_data.size(); ++i ) {
-		m_data[i] *= other.m_data[i];
+	std::size_t const n = size();
+	for ( std::size_t i = 0; i < n; ++i ) {
+		data()[i] *= other.data()[i];
 	}
 	return *this;
 }
@@ -979,13 +1101,15 @@ void TensorN<rank, T>::elementwiseMultiply( TensorN const &other, TensorN &out )
 		return;
 	}
 	if ( out.m_shape != m_shape ) {
+		out.throw_if_non_owning_realloc(
+		    "TensorN::elementwiseMultiply: cannot reallocate non-owning output" );
 		out = TensorN( m_shape );
 	}
 	#ifdef _OPENMP
 	#pragma omp parallel for schedule( static )
 	#endif
-	for ( std::size_t i = 0; i < m_data.size(); ++i ) {
-		out.m_data[i] = m_data[i] * other.m_data[i];
+	for ( std::size_t i = 0; i < size(); ++i ) {
+		out.data()[i] = data()[i] * other.data()[i];
 	}
 }
 
@@ -995,8 +1119,8 @@ TensorN<rank, T> &TensorN<rank, T>::operator*=( value_type scalar )
 	#ifdef _OPENMP
 	#pragma omp parallel for schedule( static )
 	#endif
-	for ( std::size_t i = 0; i < m_data.size(); ++i ) {
-		m_data[i] *= scalar;
+	for ( std::size_t i = 0; i < size(); ++i ) {
+		data()[i] *= scalar;
 	}
 	return *this;
 }
@@ -1004,7 +1128,7 @@ TensorN<rank, T> &TensorN<rank, T>::operator*=( value_type scalar )
 template< std::size_t rank, typename T >
 T &TensorN<rank, T>::at( std::size_t n, std::size_t c, std::size_t h, std::size_t w ) requires ( rank == 4 )
 {
-	return m_data[n * m_shape[1] * m_shape[2] * m_shape[3]
+	return data()[n * m_shape[1] * m_shape[2] * m_shape[3]
 	            + c * m_shape[2] * m_shape[3]
 	            + h * m_shape[3]
 	            + w];
@@ -1013,7 +1137,7 @@ T &TensorN<rank, T>::at( std::size_t n, std::size_t c, std::size_t h, std::size_
 template< std::size_t rank, typename T >
 T const &TensorN<rank, T>::at( std::size_t n, std::size_t c, std::size_t h, std::size_t w ) const requires ( rank == 4 )
 {
-	return m_data[n * m_shape[1] * m_shape[2] * m_shape[3]
+	return data()[n * m_shape[1] * m_shape[2] * m_shape[3]
 	            + c * m_shape[2] * m_shape[3]
 	            + h * m_shape[3]
 	            + w];
@@ -1032,7 +1156,7 @@ void TensorN<rank, T>::addColorChannelInPlace( TensorN<1, T> const &bias ) requi
 			T const b = bias.data()[c];
 			for ( std::size_t h = 0; h < H; ++h ) {
 				for ( std::size_t w = 0; w < W; ++w ) {
-					m_data[n * m_shape[1] * H * W + c * H * W + h * W + w] += b;
+					data()[n * m_shape[1] * H * W + c * H * W + h * W + w] += b;
 				}
 			}
 		}
@@ -1057,7 +1181,7 @@ void TensorN<rank, T>::addColorChannelInPlace( TensorN<4, T> const &bias ) requi
 			T const b = bd[c];
 			for ( std::size_t h = 0; h < H; ++h ) {
 				for ( std::size_t w = 0; w < W; ++w ) {
-					m_data[n * m_shape[1] * H * W + c * H * W + h * W + w] += b;
+					data()[n * m_shape[1] * H * W + c * H * W + h * W + w] += b;
 				}
 			}
 		}
@@ -1068,16 +1192,21 @@ template< std::size_t rank, typename T >
 TensorN<rank, T> &TensorN<rank, T>::cwiseGreaterInPlace( TensorN const &other, value_type scalar )
 {
 	if ( m_shape != other.m_shape ) {
+		if ( !m_own ) {
+			throw std::invalid_argument(
+			    "TensorN::cwiseGreaterInPlace: non-owning tensor cannot change shape" );
+		}
 		m_shape = other.m_shape;
 		m_strides = other.m_strides;
-		m_data.resize( other.m_data.size() );
+		m_data.resize( other.size() );
+		m_view = nullptr;
 	}
 	
 	#ifdef _OPENMP
 	#pragma omp parallel for schedule( static )
 	#endif
-	for ( std::size_t i = 0; i < m_data.size(); ++i ) {
-		m_data[i] = other.m_data[i] > scalar ? static_cast<T>( 1 ) : static_cast<T>( 0 );
+	for ( std::size_t i = 0; i < size(); ++i ) {
+		data()[i] = other.data()[i] > scalar ? static_cast<T>( 1 ) : static_cast<T>( 0 );
 	}
 
 	return *this;
@@ -1089,8 +1218,8 @@ TensorN<rank, T> &TensorN<rank, T>::mulNSubstractInPlace( TensorN const &other, 
 	#ifdef _OPENMP
 	#pragma omp parallel for schedule( static )
 	#endif
-	for ( std::size_t i = 0; i < m_data.size(); ++i ) {
-		m_data[i] -= other.m_data[i] * scalar;
+	for ( std::size_t i = 0; i < size(); ++i ) {
+		data()[i] -= other.data()[i] * scalar;
 	}
 
 	return *this;

@@ -1,5 +1,5 @@
 #include "dropout_layer.hpp"
-#include "layer.hpp"
+#include "layer_properties.hpp"
 #include "layer_wiring_helpers.hpp"
 #include "tensor.hpp"
 #include "tensor_like.hpp"

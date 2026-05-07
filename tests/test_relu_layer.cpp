@@ -1,4 +1,4 @@
-#include "layer.hpp"
+#include "layer_properties.hpp"
 #include "layer_wiring_helpers.hpp"
 #include "relu_layer.hpp"
 #include "tensor.hpp"

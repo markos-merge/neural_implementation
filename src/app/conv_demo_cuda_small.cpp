@@ -14,7 +14,7 @@ void run_conv_demo_cuda_small()
 #include "cifar10_loader.hpp"
 #include "image_processing/image_augmentation.hpp"
 #include "metrics.hpp"
-#include "convolutional_box.hpp"
+#include "convolutional_box_static.hpp"
 #include "convolutional_layer.hpp"
 #include "cross_entropy_softmax_loss.hpp"
 #include "cuda_tensor.hpp"
@@ -28,7 +28,7 @@ void run_conv_demo_cuda_small()
 #include "momentum_sgd_optimizer.hpp"
 #include "cosine_scheduling.hpp"
 #include "training_epoch_progress_reporter.hpp"
-#include "sequential_nn.hpp"
+#include "sequential_nn_static.hpp"
 #include "tensor.hpp"
 #include <omp.h>
 #include <cstdint>
@@ -46,7 +46,7 @@ using TensorN_t  = neural::CudaTensor4<float>;
 //   Conv(32→64) + BN + ReLU + MaxPool(2,2)   // 16→8
 //   Conv(64→128)+ BN + ReLU + MaxPool(2,2)   // 8→4
 //   Flatten (4*4*128 = 2048) → Linear(2048→128) + BN1d + ReLU → Linear(128→10)
-using SmallConvBox_t = neural::ConvolutionalBox<
+using SmallConvBox_t = neural::ConvolutionalBox_static<
     TensorN_t, Tensor2D_t,
     neural::ConvolutionalLayer<TensorN_t>, neural::BatchNormLayer<TensorN_t>,
     neural::ReLULayer<TensorN_t>, neural::MaxPoolLayer<TensorN_t>,
@@ -55,7 +55,7 @@ using SmallConvBox_t = neural::ConvolutionalBox<
     neural::ConvolutionalLayer<TensorN_t>, neural::BatchNormLayer<TensorN_t>,
     neural::ReLULayer<TensorN_t>, neural::MaxPoolLayer<TensorN_t>>;
 
-using SmallConvNN_t = neural::SequentialNN<
+using SmallConvNN_t = neural::SequentialNN_static<
     Tensor2D_t,
     neural::SoftmaxCrossEntropyLoss<Tensor2D_t>,
     SmallConvBox_t,

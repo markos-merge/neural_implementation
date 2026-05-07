@@ -4,7 +4,7 @@
 #include "linear_layer.hpp"
 #include "mse_loss.hpp"
 #include "momentum_sgd_optimizer.hpp"
-#include "sequential_nn.hpp"
+#include "sequential_nn_static.hpp"
 #include "tensor.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -16,7 +16,7 @@
 using neural::LinearLayer;
 using neural::MSELoss;
 using neural::MomentumSGDOptimizer;
-using neural::SequentialNN;
+using neural::SequentialNN_static;
 using neural::Tensor;
 using Catch::Matchers::WithinAbs;
 
@@ -73,7 +73,7 @@ TEST_CASE( "MomentumSGD matches PyTorch (plain) after two full-batch steps", "[p
 
 	Tensor<float> W0( 2, 1, w_init.begin(), w_init.end() );
 	Tensor<float> B0( 1, 1, b_init.begin(), b_init.end() );
-	using SimpleNN = SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
+	using SimpleNN = SequentialNN_static<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
 	SimpleNN nn( LinearLayer<Tensor<float>>( W0, B0 ) );
 	MomentumSGDOptimizer<Tensor<float>, SimpleNN> opt( nn );
 	opt.m_learning_rate  = 0.02f;
@@ -113,7 +113,7 @@ TEST_CASE( "MomentumSGD matches PyTorch (Nesterov) after two full-batch steps", 
 	std::vector<float> const t_h = read_float_file( data_dir( sub ) / "t.bin" );
 	Tensor<float> W0( 2, 1, w_init.begin(), w_init.end() );
 	Tensor<float> B0( 1, 1, b_init.begin(), b_init.end() );
-	using SimpleNN = SequentialNN<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
+	using SimpleNN = SequentialNN_static<Tensor<float>, MSELoss<Tensor<float>>, LinearLayer<Tensor<float>>>;
 	SimpleNN nn( LinearLayer<Tensor<float>>( W0, B0 ) );
 	MomentumSGDOptimizer<Tensor<float>, SimpleNN> opt( nn );
 	opt.m_learning_rate  = 0.02f;

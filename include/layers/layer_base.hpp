@@ -11,17 +11,19 @@ class LayerBase
 
 		void setInputOutputTensors( Tensor *input, Tensor *output );
 		void setGradInputOutputTensors( Tensor *grad_input, Tensor *grad_output );
+		void setLayerContainer( bool is_layer_container );
 
 		Tensor *getInput();
 		Tensor *getOutput();
 		Tensor *getGradInput();
 		Tensor *getGradOutput();
-
+		bool    isLayerContainer() const;
 	private:
 		Tensor *m_input = nullptr;
 		Tensor *m_output = nullptr;
 		Tensor *m_grad_input = nullptr;
 		Tensor *m_grad_output = nullptr;
+		bool    m_is_layer_container = false;
 };
 
 template <typename Tensor>
@@ -60,6 +62,18 @@ template <typename Tensor>
 Tensor *LayerBase<Tensor>::getGradOutput()
 {
 	return m_grad_output;
+}
+
+template <typename Tensor>
+bool LayerBase<Tensor>::isLayerContainer() const
+{
+	return m_is_layer_container;
+}
+
+template <typename Tensor>
+void LayerBase<Tensor>::setLayerContainer( bool is_layer_container )
+{
+	m_is_layer_container = is_layer_container;
 }
 
 } // namespace neural

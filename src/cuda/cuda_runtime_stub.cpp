@@ -29,18 +29,6 @@ cudaError_t cuda_swap_axes( float *, float *, std::size_t, std::size_t *, std::s
 	return cudaSuccess;
 }
 
-cudaError_t cuda_gather_rows_float( float const *, float *, std::size_t, std::size_t, int const *,
-                                    std::size_t, std::size_t )
-{
-	return cudaSuccess;
-}
-
-cudaError_t cuda_gather_rows_fp8( __nv_fp8_e4m3 const *, __nv_fp8_e4m3 *, std::size_t, std::size_t,
-                                  int const *, std::size_t, std::size_t )
-{
-	return cudaSuccess;
-}
-
 cudaError_t cuda_matmul_fp8( __nv_fp8_e4m3 *, __nv_fp8_e4m3 *, __nv_fp8_e4m3 *,
                              std::size_t, std::size_t, std::size_t, std::size_t )
 {

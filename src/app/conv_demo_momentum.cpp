@@ -1,14 +1,14 @@
 #include "conv_demo_momentum.hpp"
 #include "batch_norm_layer.hpp"
 #include "cifar10_loader.hpp"
-#include "convolutional_box.hpp"
+#include "convolutional_box_static.hpp"
 #include "convolutional_layer.hpp"
 #include "cross_entropy_softmax_loss.hpp"
 #include "linear_layer.hpp"
 #include "max_pool_layer.hpp"
 #include "momentum_sgd_optimizer.hpp"
 #include "relu_layer.hpp"
-#include "sequential_nn.hpp"
+#include "sequential_nn_static.hpp"
 #include "tensor.hpp"
 #include "tensor_n.hpp"
 #include "training_progress_bar.hpp"
@@ -23,7 +23,7 @@ namespace {
 using Tensor2D_t = neural::Tensor<float>;
 using TensorN_t  = neural::TensorN<4, float>;
 
-using ConvBox_t = neural::ConvolutionalBox<
+using ConvBox_t = neural::ConvolutionalBox_static<
     TensorN_t, Tensor2D_t,
     neural::ConvolutionalLayer<TensorN_t>,
     neural::BatchNormLayer<TensorN_t>,
@@ -34,7 +34,7 @@ using ConvBox_t = neural::ConvolutionalBox<
     neural::ReLULayer<TensorN_t>,
     neural::MaxPoolLayer<TensorN_t>>;
 
-using ConvNN_t = neural::SequentialNN<
+using ConvNN_t = neural::SequentialNN_static<
     Tensor2D_t,
     neural::SoftmaxCrossEntropyLoss<Tensor2D_t>,
     ConvBox_t,

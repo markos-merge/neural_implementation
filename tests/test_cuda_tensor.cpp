@@ -99,12 +99,6 @@ TEST_CASE( "CudaTensor stub operations are callable", "[cuda_tensor][stub]" )
 	}
 	CudaTensor<float> a( 2u, 3u, 0.f );
 	CudaTensor<float> b( 2u, 3u, 0.f );
-	{
-		CudaTensor<float> src( 2u, 3u, 0.f );
-		CudaTensor<float> dst( 2u, 3u, 0.f );
-		std::vector<int> const idx{ 0 };
-		dst.assignTensorBlock( src, idx, 0u, 1u );
-	}
 	CudaTensor<float> col_bias( 3u, 1u, 0.f );
 	CudaTensor<float> row_sub( 2u, 1u, 0.f );
 	(void)( a + b );
@@ -341,42 +335,6 @@ TEST_CASE( "CudaTensor assignTensorAsRow copies device row with cudaMemcpy", "[c
 	REQUIRE_THAT( batch( 1, 2 ), WithinAbs( 6.f, 1e-5f ) );
 }
 
-TEST_CASE( "CudaTensor assignTensorBlock gathers full rows like Tensor", "[cuda_tensor][assignTensorBlock]" )
-{
-	if ( !neural::cuda_runtime_ready() ) {
-		SKIP( "No CUDA device available" );
-	}
-	CudaTensor<float> src( 3u, 5u, 0.f );
-	for ( std::size_t row = 0; row < 3u; ++row ) {
-		for ( std::size_t c = 0; c < 5u; ++c ) {
-			src.assign( row, c, static_cast<float>( row + 1 ) );
-		}
-	}
-	CudaTensor<float> dst( 2u, 5u, 0.f );
-	std::vector<int> const indices{ 2, 0 };
-	dst.assignTensorBlock( src, indices, 0u, 2u );
-	REQUIRE_THAT( dst( 0, 0 ), WithinAbs( 3.f, 1e-5f ) );
-	REQUIRE_THAT( dst( 1, 4 ), WithinAbs( 1.f, 1e-5f ) );
-}
-
-TEST_CASE( "CudaTensor assignTensorBlock row_indices_src window", "[cuda_tensor][assignTensorBlock]" )
-{
-	if ( !neural::cuda_runtime_ready() ) {
-		SKIP( "No CUDA device available" );
-	}
-	CudaTensor<float> src( 3u, 4u, 0.f );
-	for ( std::size_t row = 0; row < 3u; ++row ) {
-		for ( std::size_t c = 0; c < 4u; ++c ) {
-			src.assign( row, c, static_cast<float>( 10 * row + static_cast<int>( c ) ) );
-		}
-	}
-	CudaTensor<float> dst( 1u, 4u, 0.f );
-	std::vector<int> const indices{ 2, 0, 1 };
-	dst.assignTensorBlock( src, indices, 1u, 1u );
-	REQUIRE_THAT( dst( 0, 0 ), WithinAbs( 0.f, 1e-5f ) );
-	REQUIRE_THAT( dst( 0, 3 ), WithinAbs( 3.f, 1e-5f ) );
-}
-
 TEST_CASE( "CudaTensor copy and move preserve shape", "[cuda_tensor][rule_of_five]" )
 {
 	if ( !neural::cuda_runtime_ready() ) {
@@ -396,3 +354,68 @@ TEST_CASE( "CudaTensor copy and move preserve shape", "[cuda_tensor][rule_of_fiv
 	REQUIRE( d.rows() == 4u );
 	REQUIRE( d.cols() == 5u );
 }
+
+#if NEURAL_CUDA_ENABLED
+
+TEST_CASE( "CudaTensor non-owning elementwiseMultiply throws if out would resize", "[cuda_tensor][view]" )
+{
+	if ( !neural::cuda_runtime_ready() ) {
+		SKIP( "No CUDA device available" );
+	}
+	float *da = nullptr;
+	float *db = nullptr;
+	float *dout = nullptr;
+	REQUIRE( cudaMalloc( reinterpret_cast<void **>( &da ), 4 * sizeof( float ) ) == cudaSuccess );
+	REQUIRE( cudaMalloc( reinterpret_cast<void **>( &db ), 4 * sizeof( float ) ) == cudaSuccess );
+	REQUIRE( cudaMalloc( reinterpret_cast<void **>( &dout ), sizeof( float ) ) == cudaSuccess );
+	CudaTensor<float> a( da, 2u, 2u, false );
+	CudaTensor<float> b( db, 2u, 2u, false );
+	CudaTensor<float> out( dout, 1u, 1u, false );
+	REQUIRE_THROWS_AS( a.elementwiseMultiply( b, out ), std::invalid_argument );
+	(void)cudaFree( da );
+	(void)cudaFree( db );
+	(void)cudaFree( dout );
+}
+
+TEST_CASE( "CudaTensor non-owning move-assign throws", "[cuda_tensor][view]" )
+{
+	if ( !neural::cuda_runtime_ready() ) {
+		SKIP( "No CUDA device available" );
+	}
+	float *d = nullptr;
+	REQUIRE( cudaMalloc( reinterpret_cast<void **>( &d ), 4 * sizeof( float ) ) == cudaSuccess );
+	CudaTensor<float> v( d, 2u, 2u, false );
+	CudaTensor<float> rhs( 2u, 2u, 1.f );
+	REQUIRE_THROWS_AS( v = std::move( rhs ), std::invalid_argument );
+	(void)cudaFree( d );
+}
+
+TEST_CASE( "CudaTensor non-owning copy-assign requires matching shape", "[cuda_tensor][view]" )
+{
+	if ( !neural::cuda_runtime_ready() ) {
+		SKIP( "No CUDA device available" );
+	}
+	float *d = nullptr;
+	REQUIRE( cudaMalloc( reinterpret_cast<void **>( &d ), 4 * sizeof( float ) ) == cudaSuccess );
+	CudaTensor<float> v( d, 2u, 2u, false );
+	CudaTensor<float> rhs( 1u, 4u, 1.f );
+	REQUIRE_THROWS_AS( v = rhs, std::invalid_argument );
+	(void)cudaFree( d );
+}
+
+TEST_CASE( "CudaTensor pointer ctor own=true frees in destructor", "[cuda_tensor][own]" )
+{
+	if ( !neural::cuda_runtime_ready() ) {
+		SKIP( "No CUDA device available" );
+	}
+	float *d = nullptr;
+	REQUIRE( cudaMalloc( reinterpret_cast<void **>( &d ), 4 * sizeof( float ) ) == cudaSuccess );
+	{
+		CudaTensor<float> t( d, 2u, 2u, true );
+		REQUIRE( t.rows() == 2u );
+	}
+	CudaTensor<float> fresh( 1u, 1u, 0.f );
+	REQUIRE_THAT( fresh( 0, 0 ), WithinAbs( 0.f, 1e-5f ) );
+}
+
+#endif // NEURAL_CUDA_ENABLED

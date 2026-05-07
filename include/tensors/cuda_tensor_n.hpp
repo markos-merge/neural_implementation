@@ -143,11 +143,26 @@ class CudaTensorNBase
 		template <std::random_access_iterator It>
 		CudaTensorNBase( std::array<std::size_t, rank> shape, It begin, It end );
 
+		/// Wrap \p device_ptr (must be a device pointer). If \p own is \c false, \c ~CudaTensorNBase
+		/// will not \c cudaFree it. If \p own is \c true, allocates new device storage and copies
+		/// \p device_ptr → allocation (caller keeps \p device_ptr).
+		CudaTensorNBase( T *device_ptr, std::array<std::size_t, rank> shape, bool own );
+		/// Same as three-argument ctor with array shape; \p shape.size() must equal \c rank
+		/// (\c CudaTensor4 is fixed at rank 4).
+		CudaTensorNBase( T *device_ptr, std::vector<std::size_t> const &shape, bool own );
+
 		CudaTensorNBase( CudaTensorNBase const &other );
 		CudaTensorNBase( CudaTensorNBase &&other ) noexcept;
 		CudaTensorNBase &operator=( CudaTensorNBase const &other );
-		CudaTensorNBase &operator=( CudaTensorNBase &&other ) noexcept;
+		CudaTensorNBase &operator=( CudaTensorNBase &&other );
 		~CudaTensorNBase();
+
+		void throw_if_non_owning_realloc( char const *context ) const
+		{
+			if ( !m_own ) {
+				throw std::invalid_argument( context );
+			}
+		}
 
 		// ----- accessors ----------------------------------------------------
 
@@ -216,6 +231,7 @@ class CudaTensorNBase
 		T *m_data = nullptr;
 		std::array<std::size_t, rank> m_shape{};
 		std::array<std::size_t, rank> m_strides{};
+		bool m_own = true;
 
 	private:
 		void recomputeStrides() noexcept;
@@ -289,6 +305,12 @@ CudaTensorNBase< rank, T >::CudaTensorNBase( std::array< std::size_t, rank > sha
 {
 	CudaStreamSyncOnExit const _cuda_stream_sync;
 	std::size_t const size = std::accumulate( shape.begin(), shape.end(), 1, std::multiplies<>() );
+	m_own = true;
+	if ( size == 0U ) {
+		m_data = nullptr;
+		recomputeStrides();
+		return;
+	}
 	if(detail::cuda_malloc_retry( reinterpret_cast<void **>( &m_data ), size * sizeof(T) ) != cudaSuccess) {
 		throw std::runtime_error( "device memory allocation failed" );
 	}
@@ -310,6 +332,12 @@ CudaTensorNBase< rank, T >::CudaTensorNBase( std::array< std::size_t, rank > sha
 {
 	CudaStreamSyncOnExit const _cuda_stream_sync;
 	std::size_t const size = std::accumulate( shape.begin(), shape.end(), 1, std::multiplies<>() );
+	m_own = true;
+	if ( size == 0U ) {
+		m_data = nullptr;
+		recomputeStrides();
+		return;
+	}
 	if(detail::cuda_malloc_retry( reinterpret_cast<void **>( &m_data ), size * sizeof(T) ) != cudaSuccess) {
 		throw std::runtime_error( "device memory allocation failed" );
 	}
@@ -333,6 +361,12 @@ CudaTensorNBase< rank, T >::CudaTensorNBase( std::array< std::size_t, rank > sha
 {
 	CudaStreamSyncOnExit const _cuda_stream_sync;
 	std::size_t const size = std::accumulate( shape.begin(), shape.end(), 1, std::multiplies<>() );
+	m_own = true;
+	if ( size == 0U ) {
+		m_data = nullptr;
+		recomputeStrides();
+		return;
+	}
 	if(detail::cuda_malloc_retry( reinterpret_cast<void **>( &m_data ), size * sizeof(T) ) != cudaSuccess) {
 		throw std::runtime_error( "device memory allocation failed" );
 	}
@@ -346,25 +380,89 @@ CudaTensorNBase< rank, T >::CudaTensorNBase( std::array< std::size_t, rank > sha
 }
 
 template <std::size_t rank, typename T>
+CudaTensorNBase< rank, T >::CudaTensorNBase( T *device_ptr, std::array< std::size_t, rank > shape, bool own )
+	: m_shape( shape )
+	, m_own( own )
+{
+	CudaStreamSyncOnExit const _cuda_stream_sync;
+	std::size_t const n = std::accumulate( shape.begin(), shape.end(), 1, std::multiplies<>() );
+	if ( own ) {
+		m_own = true;
+		m_data = nullptr;
+		if ( n == 0U ) {
+			recomputeStrides();
+			return;
+		}
+		if ( detail::cuda_malloc_retry( reinterpret_cast<void **>( &m_data ), n * sizeof( T ) )
+		     != cudaSuccess ) {
+			throw std::runtime_error( "device memory allocation failed" );
+		}
+		if ( device_ptr != nullptr ) {
+			if ( cudaMemcpy( m_data, device_ptr, n * sizeof( T ), cudaMemcpyDeviceToDevice )
+			     != cudaSuccess ) {
+				(void)cudaFree( m_data );
+				m_data = nullptr;
+				throw std::runtime_error(
+				    "CudaTensorNBase(device_ptr,shape,own): device to device copy failed" );
+			}
+		} else if constexpr ( std::is_same_v<T, float> ) {
+			if ( cuda_fill_float( m_data, n, 0.f ) != cudaSuccess ) {
+				(void)cudaFree( m_data );
+				m_data = nullptr;
+				throw std::runtime_error( "CudaTensorNBase: cuda_fill_float failed" );
+			}
+		} else {
+			if ( cudaMemset( m_data, 0, n * sizeof( T ) ) != cudaSuccess ) {
+				(void)cudaFree( m_data );
+				m_data = nullptr;
+				throw std::runtime_error( "CudaTensorNBase: cudaMemset failed" );
+			}
+		}
+	} else {
+		m_own = false;
+		m_data = device_ptr;
+	}
+	recomputeStrides();
+}
+
+template <std::size_t rank, typename T >
+CudaTensorNBase< rank, T >::CudaTensorNBase( T *device_ptr, std::vector<std::size_t> const &shape,
+                                             bool own )
+	: CudaTensorNBase( device_ptr, nn_shape_vec_to_fixed<rank>( shape ), own )
+{
+}
+
+template <std::size_t rank, typename T >
 CudaTensorNBase< rank, T >::~CudaTensorNBase()
 {
-	if ( m_data != nullptr ) {
+	if ( m_own && m_data != nullptr ) {
 		::neural::cuda_layer_sync();
-		cudaFree( m_data );
-		m_data = nullptr;
+		(void)cudaFree( m_data );
 	}
+	m_data = nullptr;
 }
 
 template <std::size_t rank, typename T>
 CudaTensorNBase< rank, T >::CudaTensorNBase( CudaTensorNBase const &other )
 	: m_shape( other.m_shape )
+	, m_strides( other.m_strides )
+	, m_own( true )
 {
 	CudaStreamSyncOnExit const _cuda_stream_sync;
-	if(detail::cuda_malloc_retry( reinterpret_cast<void **>( &m_data ), other.size() * sizeof(T) ) != cudaSuccess) {
+	m_data = nullptr;
+	if ( other.size() == 0U || other.m_data == nullptr ) {
+		recomputeStrides();
+		return;
+	}
+	if ( detail::cuda_malloc_retry( reinterpret_cast<void **>( &m_data ), other.size() * sizeof( T ) )
+	     != cudaSuccess ) {
 		throw std::runtime_error( "device memory allocation failed" );
 	}
 
-	if( cudaMemcpy( m_data, other.m_data, other.size() * sizeof(T), cudaMemcpyDeviceToDevice ) != cudaSuccess ) {
+	if ( cudaMemcpy( m_data, other.m_data, other.size() * sizeof( T ), cudaMemcpyDeviceToDevice )
+	     != cudaSuccess ) {
+		(void)cudaFree( m_data );
+		m_data = nullptr;
 		throw std::runtime_error( "device to device copy failed" );
 	}
 
@@ -374,59 +472,107 @@ CudaTensorNBase< rank, T >::CudaTensorNBase( CudaTensorNBase const &other )
 template <std::size_t rank, typename T>
 CudaTensorNBase< rank, T >::CudaTensorNBase( CudaTensorNBase &&other ) noexcept
 	: m_shape( other.m_shape )
+	, m_strides( other.m_strides )
+	, m_data( other.m_data )
+	, m_own( other.m_own )
 {
 	CudaStreamSyncOnExit const _cuda_stream_sync;
-	m_data = other.m_data;
 	other.m_data = nullptr;
-
-	recomputeStrides();
+	other.m_own = true;
+	other.m_shape = {};
+	other.recomputeStrides();
 }
 
 template <std::size_t rank, typename T>
 CudaTensorNBase< rank, T > &CudaTensorNBase< rank, T >::operator=( CudaTensorNBase const &other )
 {
 	CudaStreamSyncOnExit const _cuda_stream_sync;
-	if(this == &other) {
+	if ( this == &other ) {
 		return *this;
 	}
 
-	if(m_data != nullptr) {
-		cudaFree( m_data );
+	if ( !m_own ) {
+		if ( m_shape != other.m_shape ) {
+			throw std::invalid_argument(
+			    "CudaTensorNBase::operator=(CudaTensorNBase const &): non-owning tensor requires matching shape" );
+		}
+		if ( other.m_data == nullptr || other.size() == 0 ) {
+			return *this;
+		}
+		if ( cudaMemcpy( m_data, other.m_data, size() * sizeof( T ), cudaMemcpyDeviceToDevice )
+		     != cudaSuccess ) {
+			throw std::runtime_error(
+			    "CudaTensorNBase::operator=(const &): device memory copy failed" );
+		}
+		m_strides = other.m_strides;
+		return *this;
 	}
 
-	m_data = nullptr;
-	m_shape = other.m_shape;
+	if ( other.m_data == nullptr || other.size() == 0 ) {
+		m_shape = other.m_shape;
+		if ( m_data != nullptr ) {
+			(void)cudaFree( m_data );
+			m_data = nullptr;
+		}
+		recomputeStrides();
+		return *this;
+	}
 
-	if(detail::cuda_malloc_retry( reinterpret_cast<void **>( &m_data ), other.size() * sizeof(T) ) != cudaSuccess) {
+	std::size_t const old_n = size();
+	m_shape = other.m_shape;
+	std::size_t const new_n = size();
+
+	if ( m_data != nullptr && old_n == new_n ) {
+		if ( cudaMemcpy( m_data, other.m_data, new_n * sizeof( T ), cudaMemcpyDeviceToDevice )
+		     != cudaSuccess ) {
+			throw std::runtime_error(
+			    "CudaTensorNBase::operator=(const &): device memory copy failed" );
+		}
+		m_strides = other.m_strides;
+		return *this;
+	}
+
+	if ( m_data != nullptr ) {
+		(void)cudaFree( m_data );
+		m_data = nullptr;
+	}
+
+	if ( detail::cuda_malloc_retry( reinterpret_cast<void **>( &m_data ), new_n * sizeof( T ) )
+	     != cudaSuccess ) {
 		throw std::runtime_error( "device memory allocation failed" );
 	}
 
-	if(cudaMemcpy( m_data, other.m_data, other.size() * sizeof(T), cudaMemcpyDeviceToDevice ) != cudaSuccess) {
+	if ( cudaMemcpy( m_data, other.m_data, new_n * sizeof( T ), cudaMemcpyDeviceToDevice )
+	     != cudaSuccess ) {
+		(void)cudaFree( m_data );
+		m_data = nullptr;
 		throw std::runtime_error( "device to device copy failed" );
 	}
 
-	recomputeStrides();
-
+	m_strides = other.m_strides;
 	return *this;
 }
 
 template <std::size_t rank, typename T>
-CudaTensorNBase< rank, T > &CudaTensorNBase< rank, T >::operator=( CudaTensorNBase &&other ) noexcept
+CudaTensorNBase< rank, T > &CudaTensorNBase< rank, T >::operator=( CudaTensorNBase &&other )
 {
 	CudaStreamSyncOnExit const _cuda_stream_sync;
-	if(this == &other) {
+	if ( this == &other ) {
 		return *this;
 	}
-	
-	if( m_data != nullptr ) {
-		cudaFree( m_data );
+	throw_if_non_owning_realloc(
+	    "CudaTensorNBase::operator=(CudaTensorNBase&&): cannot move-assign into a non-owning tensor" );
+	if ( m_own && m_data != nullptr ) {
+		(void)cudaFree( m_data );
 	}
-
 	m_data = other.m_data;
 	m_shape = other.m_shape;
+	m_strides = other.m_strides;
+	m_own = other.m_own;
 	other.m_data = nullptr;
-
-	recomputeStrides();
+	other.m_own = true;
+	other.m_shape = {};
+	other.recomputeStrides();
 
 	return *this;
 }
@@ -589,6 +735,8 @@ void CudaTensorNBase< rank, T >::reduceSumToDim( std::size_t axis, CudaTensorNBa
 
 	std::size_t const output_size = m_shape[axis];
 	if(output.shape()[0] != output_size) {
+		output.throw_if_non_owning_realloc(
+		    "CudaTensorNBase::reduceSumToDim: cannot reallocate non-owning output" );
 		output = CudaTensorNBase<1, T>( { output_size } );
 	}
 	
@@ -622,6 +770,8 @@ void CudaTensorNBase< rank, T >::swapAxes( std::array<std::size_t, rank> const &
 	}
 
 	if( output.shape() != new_shape ) {
+		output.throw_if_non_owning_realloc(
+		    "CudaTensorNBase::swapAxes: cannot reallocate non-owning output" );
 		output = CudaTensorNBase<rank, T>( new_shape );
 	}
 	
@@ -666,15 +816,17 @@ void CudaTensorNBase< rank, T >::elementwiseMultiply( CudaTensorNBase const &oth
 		const_cast<CudaTensorNBase &>( *this ) *= other;
 		return;
 	}
-	if ( out.m_shape != m_shape || out.m_data == nullptr ) {
+	if ( out.m_shape != m_shape || out.data() == nullptr ) {
+		out.throw_if_non_owning_realloc(
+		    "CudaTensorNBase::elementwiseMultiply: cannot reallocate non-owning output" );
 		out = CudaTensorNBase<rank, T>( m_shape );
 	}
 	if constexpr ( std::is_same_v<T, float> ) {
-		if ( cuda_mul_float( m_data, other.m_data, out.m_data, size() ) != cudaSuccess ) {
+		if ( cuda_mul_float( m_data, other.m_data, out.data(), size() ) != cudaSuccess ) {
 			throw std::runtime_error( "CudaTensorNBase::elementwiseMultiply: cuda_mul_float failed" );
 		}
 	} else if constexpr ( std::is_same_v<T, __nv_fp8_e4m3> ) {
-		if ( cuda_mul_fp8( m_data, other.m_data, out.m_data, size() ) != cudaSuccess ) {
+		if ( cuda_mul_fp8( m_data, other.m_data, out.data(), size() ) != cudaSuccess ) {
 			throw std::runtime_error( "CudaTensorNBase::elementwiseMultiply: cuda_mul_fp8 failed" );
 		}
 	} else {
@@ -707,6 +859,10 @@ CudaTensorNBase< rank, T > &CudaTensorNBase< rank, T >::cwiseGreaterInPlace( Cud
 {
 	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if ( m_shape != other.m_shape ) {
+		if ( !m_own ) {
+			throw std::invalid_argument(
+			    "CudaTensorNBase::cwiseGreaterInPlace: non-owning tensor cannot change shape" );
+		}
 		*this = CudaTensorNBase( other.m_shape );
 	}
 
@@ -893,6 +1049,8 @@ void CudaTensor4<T>::im2ColConvolution( CudaTensor4<T> const &kernel,
 			                                       static_cast<std::size_t>( h ),
 			                                       static_cast<std::size_t>( w ) };
 		if ( output.shape() != out_shape_sz ) {
+			output.throw_if_non_owning_realloc(
+			    "CudaTensor4::im2ColConvolution: cannot reallocate non-owning output" );
 			output = CudaTensor4<T>( out_shape_sz );
 		}
 
@@ -1221,6 +1379,8 @@ void convolutional_backward_cudnn( CudaTensor4<T> &grad_wrt_output_nchw, CudaTen
 			    "convolutional_backward_cudnn: grad_bias must be {1, C_out, 1, 1}" );
 		}
 		if ( grad_wrt_input_nchw.shape() != input_activations.shape() ) {
+			grad_wrt_input_nchw.throw_if_non_owning_realloc(
+			    "convolutional_backward_cudnn: cannot reallocate non-owning grad_wrt_input" );
 			grad_wrt_input_nchw = CudaTensor4<T>( input_activations.shape() );
 		}
 
@@ -1501,6 +1661,9 @@ namespace neural {
 
 template <std::size_t rank, typename T = float>
 using CudaTensorN = TensorN<rank, T>;
+
+template <typename T = float>
+using CudaTensor4 = TensorN<4, T>;
 
 } // namespace neural
 

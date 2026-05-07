@@ -5,7 +5,7 @@
 
 #if NEURAL_CUDA_ENABLED && NEURAL_CUDNN_ENABLED
 
-#include "convolutional_box.hpp"
+#include "convolutional_box_static.hpp"
 #include "convolutional_layer.hpp"
 #include "cross_entropy_softmax_loss.hpp"
 #include "cuda_tensor.hpp"
@@ -17,14 +17,14 @@
 #include "momentum_sgd_optimizer.hpp"
 #include "neural_cuda_runtime.hpp"
 #include "relu_layer.hpp"
-#include "sequential_nn.hpp"
+#include "sequential_nn_static.hpp"
 #include "tensor.hpp"
 
 using Catch::Matchers::WithinAbs;
 
 namespace {
 
-using neural::ConvolutionalBox;
+using neural::ConvolutionalBox_static;
 using neural::ConvolutionalLayer;
 using neural::CudaTensor;
 using neural::CudaTensor4;
@@ -33,7 +33,7 @@ using neural::LinearLayer;
 using neural::MaxPoolLayer;
 using neural::MomentumSGDOptimizer;
 using neural::ReLULayer;
-using neural::SequentialNN;
+using neural::SequentialNN_static;
 using neural::SoftmaxCrossEntropyLoss;
 using neural::Tensor;
 
@@ -46,7 +46,7 @@ constexpr int W = 8;
 constexpr std::size_t in_cols = static_cast<std::size_t>( C * H * W );
 constexpr std::size_t n_classes = 3;
 
-using ConvFeatureExtractor = ConvolutionalBox<
+using ConvFeatureExtractor = ConvolutionalBox_static<
     TensorN_t, Tensor2D_t,
     ConvolutionalLayer<TensorN_t>,
     ReLULayer<TensorN_t>,
@@ -55,7 +55,7 @@ using ConvFeatureExtractor = ConvolutionalBox<
 
 /// Full model is a \c SequentialNN (2D latch tensor): conv stack + linear head.
 using TinyConvNN_t =
-    SequentialNN<Tensor2D_t, SoftmaxCrossEntropyLoss<Tensor2D_t>, ConvFeatureExtractor,
+    SequentialNN_static<Tensor2D_t, SoftmaxCrossEntropyLoss<Tensor2D_t>, ConvFeatureExtractor,
                  LinearLayer<Tensor2D_t>>;
 
 void set_train_mode( TinyConvNN_t &nn, bool training )

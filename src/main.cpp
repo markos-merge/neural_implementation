@@ -8,6 +8,7 @@
 #include <iostream>
 #include <omp.h>
 #include "conv_demo.hpp"
+#include "conv_demo_refactor.hpp"
 
 int main()
 {
@@ -22,7 +23,8 @@ int main()
 	// run_conv_demo();
 	// run_conv_demo_momentum();
 	// run_conv_demo_cpu_small(); // TensorN im2col (CPU); see header for vs. CUDA geometry
-	run_conv_demo_cuda_small();
+	// run_conv_demo_cuda_small();
 	// run_conv_demo_cuda();
+	run_conv_demo_refactor();
 	return 0;
 }

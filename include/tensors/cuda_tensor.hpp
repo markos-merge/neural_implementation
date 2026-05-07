@@ -60,7 +60,11 @@ class CudaTensor
 		CudaTensor( CudaTensor const &other );
 		CudaTensor( CudaTensor &&other ) noexcept;
 		CudaTensor &operator=( CudaTensor const &other );
-		CudaTensor &operator=( CudaTensor &&other ) noexcept;
+		CudaTensor &operator=( CudaTensor &&other );
+
+		/// Wrap an existing device pointer; if \p own is \c false, \c ~CudaTensor will not \c cudaFree it.
+		CudaTensor( T *device_ptr, std::size_t rows, std::size_t cols, bool own ) noexcept;
+
 		~CudaTensor();
 
 		std::size_t rows() const;
@@ -81,11 +85,9 @@ class CudaTensor
 
 		void assignTensorAsRow( std::size_t row, CudaTensor const &other );
 		void assignTensor( value_type *value, std::size_t size );
-		void assignTensorBlock( CudaTensor const &src, std::vector< int > const &indices,
-		                        std::size_t row_indices_src, std::size_t row_indices_size );
 
 		CudaTensor transpose() const;
-		CudaTensor &transposeInPlace() noexcept;
+		CudaTensor &transposeInPlace();
 		CudaTensor reshape( std::size_t rows, std::size_t cols ) const;
 		CudaTensor &reshapeInPlace( std::size_t rows, std::size_t cols );
 
@@ -99,8 +101,12 @@ class CudaTensor
 		/// Elementwise product of \c *this and \p other into \p out; replaces \p out if shape differs.
 		void elementwiseMultiply( CudaTensor const &other, CudaTensor &out ) const;
 		CudaTensor &mulNSubstractInPlace( CudaTensor const &other, value_type scalar );
+		/// BLAS-style \c axpy: \c *this := alpha * x + *this (float only).
+		CudaTensor &axpy( CudaTensor const &x, value_type alpha );
+		/// BLAS-style \c geam (in-place): \c *this := alpha * *this + beta * B (float only).
+		CudaTensor &geam( value_type alpha, value_type beta, CudaTensor const &B );
 
-	CudaTensor divideRowsWithCol( CudaTensor const &other ) const;
+		CudaTensor divideRowsWithCol( CudaTensor const &other ) const;
 		CudaTensor &divideRowsWithColInPlace( CudaTensor const &other );
 
 		value_type maxCoeff() const;
@@ -120,6 +126,7 @@ class CudaTensor
 		CudaTensor cwiseGreater( value_type scalar ) const;
 		CudaTensor &cwiseGreaterInPlace( CudaTensor const &other, value_type scalar );
 		CudaTensor cwiseOneMinus() const;
+		void cwiseSigmoid( CudaTensor &out ) const;
 		CudaTensor cwiseSigmoid() const;
 		CudaTensor cwiseExp() const;
 		CudaTensor cwiseLog() const;
@@ -147,9 +154,18 @@ class CudaTensor
 
 		void copyToHost( T *host ) const;
 	private:
+		/// Non-owning tensors borrow device storage; \c cudaFree / realloc must not run on them.
+		void throw_if_non_owning_realloc( char const *context ) const
+		{
+			if ( !m_own ) {
+				throw std::invalid_argument( context );
+			}
+		}
+
 		std::size_t m_rows = 0;
 		std::size_t m_cols = 0;
 		T *m_data_handle = nullptr;
+		bool m_own = true;
 };
 
 template <typename U>
@@ -172,7 +188,7 @@ CudaTensor<T>::CudaTensor( std::size_t rows, std::size_t cols )
 		throw std::runtime_error( "device memory allocation failed" );
 	}
 	if constexpr ( std::is_same_v<T, float> ) {
-		cuda_stat = cuda_fill_float( m_data_handle, rows * cols, 0.f );
+		cuda_stat = cudaMemset( m_data_handle, 0, rows * cols * sizeof( T ) );
 #if NEURAL_CUDA_ENABLED
 	} else if constexpr ( std::is_same_v<T, fp8> ) {
 		cuda_stat = cuda_fill_fp8( m_data_handle, rows * cols, fp8{} );
@@ -222,7 +238,7 @@ CudaTensor<T>::CudaTensor( std::size_t rows, std::size_t cols, It begin, It end 
 template <typename T>
 CudaTensor<T>::~CudaTensor()
 {
-	if ( m_data_handle != nullptr ) {
+	if ( m_own && m_data_handle != nullptr ) {
 		::neural::cuda_layer_sync();
 		cudaFree( m_data_handle );
 		m_data_handle = nullptr;
@@ -287,15 +303,26 @@ CudaTensor<T>::CudaTensor( CudaTensor const &other )
 }
 
 template <typename T>
+CudaTensor<T>::CudaTensor( T *device_ptr, std::size_t rows, std::size_t cols, bool own ) noexcept
+    : m_rows( rows )
+    , m_cols( cols )
+    , m_data_handle( device_ptr )
+    , m_own( own )
+{
+}
+
+template <typename T>
 CudaTensor<T>::CudaTensor( CudaTensor &&other ) noexcept
     : m_rows( other.m_rows )
     , m_cols( other.m_cols )
     , m_data_handle( other.m_data_handle )
+    , m_own( other.m_own )
 {
 	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	other.m_data_handle = nullptr;
 	other.m_rows = 0;
 	other.m_cols = 0;
+	other.m_own = true;
 }
 
 template <typename T>
@@ -305,6 +332,23 @@ CudaTensor<T> &CudaTensor<T>::operator=( CudaTensor const &other )
 	if ( this == &other ) {
 		return *this;
 	}
+	if ( !m_own ) {
+		if ( m_rows != other.m_rows || m_cols != other.m_cols ) {
+			throw std::invalid_argument(
+			    "CudaTensor::operator=(CudaTensor const &): non-owning tensor requires matching shape" );
+		}
+		if ( other.m_data_handle == nullptr || size() == 0 ) {
+			return *this;
+		}
+		cudaError_t const cuda_stat =
+		    cudaMemcpy( m_data_handle, other.m_data_handle, size() * sizeof( T ),
+		                cudaMemcpyDeviceToDevice );
+		if ( cuda_stat != cudaSuccess ) {
+			throw std::runtime_error( "CudaTensor::operator=(const &): device memory copy failed" );
+		}
+		return *this;
+	}
+
 	if ( other.m_data_handle == nullptr ) {
 		if ( m_data_handle != nullptr ) {
 			cudaFree( m_data_handle );
@@ -351,21 +395,25 @@ CudaTensor<T> &CudaTensor<T>::operator=( CudaTensor const &other )
 }
 
 template <typename T>
-CudaTensor<T> &CudaTensor<T>::operator=( CudaTensor &&other ) noexcept
+CudaTensor<T> &CudaTensor<T>::operator=( CudaTensor &&other )
 {
 	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
 	if ( this == &other ) {
 		return *this;
 	}
-	if ( m_data_handle != nullptr ) {
+	throw_if_non_owning_realloc(
+	    "CudaTensor::operator=(CudaTensor &&): cannot move-assign into a non-owning tensor" );
+	if ( m_own && m_data_handle != nullptr ) {
 		cudaFree( m_data_handle );
 	}
 	m_rows = other.m_rows;
 	m_cols = other.m_cols;
 	m_data_handle = other.m_data_handle;
+	m_own = other.m_own;
 	other.m_data_handle = nullptr;
 	other.m_rows = 0;
 	other.m_cols = 0;
+	other.m_own = true;
 	return *this;
 }
 
@@ -508,73 +556,6 @@ void CudaTensor<T>::assign( value_type const *src, std::size_t size )
 }
 
 template <typename T>
-void CudaTensor<T>::assignTensorBlock( CudaTensor const &src, std::vector< int > const &indices,
-                                       std::size_t row_indices_src, std::size_t row_indices_size )
-{
-	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
-	if ( row_indices_size == 0u ) {
-		return;
-	}
-	if ( indices.size() < 1u ) {
-		throw std::invalid_argument(
-		    "CudaTensor::assignTensorBlock(): indices must be non-empty" );
-	}
-	if ( row_indices_src + row_indices_size > indices.size() ) {
-		throw std::invalid_argument(
-		    "CudaTensor::assignTensorBlock(): row_indices_src + row_indices_size exceeds indices.size()" );
-	}
-	if ( row_indices_size > m_rows ) {
-		throw std::invalid_argument(
-		    "CudaTensor::assignTensorBlock(): row_indices_size exceeds destination rows()" );
-	}
-	if ( src.m_cols != m_cols ) {
-		throw std::invalid_argument(
-		    "CudaTensor::assignTensorBlock(): src and *this must have the same number of columns" );
-	}
-	if ( m_data_handle == nullptr || src.m_data_handle == nullptr || m_cols == 0 ) {
-		return;
-	}
-
-	for ( std::size_t r = 0; r < row_indices_size; ++r ) {
-		int const src_row = indices[row_indices_src + r];
-		if ( src_row < 0 || static_cast<std::size_t>( src_row ) >= src.m_rows ) {
-			throw std::out_of_range( "CudaTensor::assignTensorBlock(): indices entry out of range for src" );
-		}
-	}
-
-	if constexpr ( std::is_same_v<T, float> ) {
-		cudaError_t const err = cuda_gather_rows_float( src.m_data_handle, m_data_handle, src.m_rows,
-		    m_cols, indices.data(), row_indices_src, row_indices_size );
-		if ( err != cudaSuccess ) {
-			throw std::runtime_error( "CudaTensor::assignTensorBlock(): cuda_gather_rows_float failed" );
-		}
-		return;
-	}
-#if NEURAL_CUDA_ENABLED
-	if constexpr ( std::is_same_v<T, fp8> ) {
-		cudaError_t const err = cuda_gather_rows_fp8( src.m_data_handle, m_data_handle, src.m_rows,
-		    m_cols, indices.data(), row_indices_src, row_indices_size );
-		if ( err != cudaSuccess ) {
-			throw std::runtime_error( "CudaTensor::assignTensorBlock(): cuda_gather_rows_fp8 failed" );
-		}
-		return;
-	}
-#endif
-
-	cudaStream_t const stream = cudaStreamDefault;
-	for ( std::size_t r = 0; r < row_indices_size; ++r ) {
-		int const src_row = indices[row_indices_src + r];
-		cudaError_t const cuda_stat = cudaMemcpyAsync(
-		    m_data_handle + r * m_cols,
-		    src.m_data_handle + static_cast<std::size_t>( src_row ) * src.m_cols, m_cols * sizeof( T ),
-		    cudaMemcpyDeviceToDevice, stream );
-		if ( cuda_stat != cudaSuccess ) {
-			throw std::runtime_error( "CudaTensor::assignTensorBlock(): cudaMemcpyAsync failed" );
-		}
-	}
-}
-
-template <typename T>
 CudaTensor<T> CudaTensor<T>::transpose() const
 {
 	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
@@ -604,9 +585,11 @@ CudaTensor<T> CudaTensor<T>::transpose() const
 }
 
 template <typename T>
-CudaTensor<T> &CudaTensor<T>::transposeInPlace() noexcept
+CudaTensor<T> &CudaTensor<T>::transposeInPlace()
 {
 	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
+	throw_if_non_owning_realloc(
+	    "CudaTensor::transposeInPlace(): would replace storage on a non-owning tensor" );
 	*this = transpose();
 	return *this;
 }
@@ -686,6 +669,8 @@ template <typename T>
 CudaTensor<T> &CudaTensor<T>::matmulInPlace( CudaTensor const &other )
 {
 	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
+	throw_if_non_owning_realloc(
+	    "CudaTensor::matmulInPlace(): would replace storage on a non-owning tensor" );
 	CudaTensor<T> out = matmul( other );
 	*this = std::move( out );
 	return *this;
@@ -877,6 +862,8 @@ void CudaTensor<T>::elementwiseMultiply( CudaTensor const &other, CudaTensor &ou
 		    "CudaTensor::elementwiseMultiply(): incompatible dimensions" );
 	}
 	if ( out.m_rows != m_rows || out.m_cols != m_cols ) {
+		out.throw_if_non_owning_realloc(
+		    "CudaTensor::elementwiseMultiply(): cannot resize a non-owning output tensor" );
 		out = CudaTensor<T>( m_rows, m_cols );
 	}
 	if ( size() == 0 ) {
@@ -931,6 +918,71 @@ CudaTensor<T> &CudaTensor<T>::mulNSubstractInPlace( CudaTensor const &other, val
 		return *this;
 	} else {
 		throw std::invalid_argument( "CudaTensor::mulNSubstractInPlace(): unsupported type" );
+	}
+}
+
+template <typename T>
+CudaTensor<T> &CudaTensor<T>::axpy( CudaTensor const &x, value_type alpha )
+{
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
+	if ( m_rows != x.m_rows || m_cols != x.m_cols ) {
+		throw std::invalid_argument( "CudaTensor::axpy(): incompatible dimensions" );
+	}
+	if ( size() == 0 ) {
+		return *this;
+	}
+	if ( m_data_handle == nullptr || x.m_data_handle == nullptr ) {
+		throw std::runtime_error( "CudaTensor::axpy(): tensor not initialized" );
+	}
+	if constexpr ( std::is_same_v<T, float> ) {
+		float a = static_cast<float>( alpha );
+		cublasStatus_t const st = cublasSaxpy( CublasHandle::instance(), static_cast<int>( size() ),
+		                                       &a, x.m_data_handle, 1, m_data_handle, 1 );
+		if ( st != CUBLAS_STATUS_SUCCESS ) {
+			throw std::runtime_error( "CudaTensor::axpy(): cublasSaxpy failed" );
+		}
+		return *this;
+	} else {
+		throw std::invalid_argument( "CudaTensor::axpy(): unsupported type" );
+	}
+}
+
+template <typename T>
+CudaTensor<T> &CudaTensor<T>::geam( value_type alpha, value_type beta, CudaTensor const &B )
+{
+	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
+	if ( m_rows != B.m_rows || m_cols != B.m_cols ) {
+		throw std::invalid_argument( "CudaTensor::geam(): incompatible dimensions" );
+	}
+	if ( size() == 0 ) {
+		return *this;
+	}
+	if ( m_data_handle == nullptr || B.m_data_handle == nullptr ) {
+		throw std::runtime_error( "CudaTensor::geam(): tensor not initialized" );
+	}
+	if constexpr ( std::is_same_v<T, float> ) {
+		float a = static_cast<float>( alpha );
+		float b = static_cast<float>( beta );
+		cublasStatus_t const st = cublasSgeam(
+		    CublasHandle::instance(),
+		    CUBLAS_OP_N,
+		    CUBLAS_OP_N,
+		    static_cast<int>( m_cols ),
+		    static_cast<int>( m_rows ),
+		    &a,
+		    m_data_handle,
+		    static_cast<int>( m_cols ),
+		    &b,
+		    B.m_data_handle,
+		    static_cast<int>( m_cols ),
+		    m_data_handle,
+		    static_cast<int>( m_cols ) );
+		if ( st != CUBLAS_STATUS_SUCCESS ) {
+			throw std::runtime_error( "CudaTensor::geam(): cublasSgeam failed" );
+		}
+		return *this;
+	} else {
+		throw std::invalid_argument( "CudaTensor::geam(): unsupported type" );
 	}
 }
 
@@ -1521,30 +1573,49 @@ CudaTensor<T> CudaTensor<T>::cwiseOneMinus() const
 }
 
 template <typename T>
-CudaTensor<T> CudaTensor<T>::cwiseSigmoid() const
+void CudaTensor<T>::cwiseSigmoid( CudaTensor<T> &out ) const
 {
 	CudaStreamSyncOnExit const _cuda_tensor_op_sync;
-	if ( size() == 0 || m_data_handle == nullptr ) {
-		return CudaTensor<T>{};
+	if ( out.m_rows != m_rows || out.m_cols != m_cols ) {
+		out.throw_if_non_owning_realloc(
+		    "CudaTensor::cwiseSigmoid(): cannot resize a non-owning output tensor" );
+		out = CudaTensor<T>( m_rows, m_cols );
 	}
-	CudaTensor<T> out( m_rows, m_cols, value_type{} );
+	if ( size() == 0 ) {
+		return;
+	}
+	if ( m_data_handle == nullptr || out.m_data_handle == nullptr ) {
+		throw std::runtime_error(
+		    "CudaTensor::cwiseSigmoid(): tensor not initialized" );
+	}
 	if constexpr ( std::is_same_v<T, float> ) {
-		cudaError_t const err = cuda_cwise_sigmoid_float( m_data_handle, out.m_data_handle, size() );
+		cudaError_t const err =
+		    cuda_cwise_sigmoid_float( m_data_handle, out.m_data_handle, size() );
 		if ( err != cudaSuccess ) {
 			throw std::runtime_error( "CudaTensor::cwiseSigmoid(): cuda_cwise_sigmoid_float failed" );
 		}
-		return out;
 #if NEURAL_CUDA_ENABLED
 	} else if constexpr ( std::is_same_v<T, fp8> ) {
-		cudaError_t const err = cuda_cwise_sigmoid_fp8( m_data_handle, out.m_data_handle, size() );
+		cudaError_t const err =
+		    cuda_cwise_sigmoid_fp8( m_data_handle, out.m_data_handle, size() );
 		if ( err != cudaSuccess ) {
 			throw std::runtime_error( "CudaTensor::cwiseSigmoid(): cuda_cwise_sigmoid_fp8 failed" );
 		}
-		return out;
 #endif
 	} else {
 		throw std::invalid_argument( "CudaTensor::cwiseSigmoid(): unsupported type" );
 	}
+}
+
+template <typename T>
+CudaTensor<T> CudaTensor<T>::cwiseSigmoid() const
+{
+	if ( size() == 0 || m_data_handle == nullptr ) {
+		return CudaTensor<T>{};
+	}
+	CudaTensor<T> out;
+	cwiseSigmoid( out );
+	return out;
 }
 
 template <typename T>

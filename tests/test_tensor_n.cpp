@@ -330,3 +330,54 @@ TEST_CASE( "col2Im single activated row maps to one image pixel", "[tensor_n][co
         }
     }
 }
+
+TEST_CASE( "TensorN pointer ctor own=false is a view", "[tensor_n][view]" )
+{
+    std::vector<float> buf = { 1.f, 2.f, 3.f, 4.f };
+    TensorN<2> t( buf.data(), idx<2>({ 2, 2 }), false );
+    CHECK_THAT( t( idx<2>({ 0, 1 }) ), WithinAbs( 2.f, 1e-6f ) );
+    buf[1] = 9.f;
+    CHECK_THAT( t( idx<2>({ 0, 1 }) ), WithinAbs( 9.f, 1e-6f ) );
+}
+
+TEST_CASE( "TensorN pointer ctor own=true copies storage", "[tensor_n][own]" )
+{
+    std::vector<float> buf = { 1.f, 2.f, 3.f, 4.f };
+    TensorN<2> t( buf.data(), idx<2>({ 2, 2 }), true );
+    buf[0] = 99.f;
+    CHECK_THAT( t( idx<2>({ 0, 0 }) ), WithinAbs( 1.f, 1e-6f ) );
+}
+
+TEST_CASE( "TensorN non-owning copy-assign same shape writes buffer", "[tensor_n][view]" )
+{
+    std::vector<float> buf( 4, 0.f );
+    TensorN<2> v( buf.data(), idx<2>({ 2, 2 }), false );
+    TensorN<2> rhs( idx<2>({ 2, 2 }), 5.f );
+    v = rhs;
+    CHECK_THAT( buf[0], WithinAbs( 5.f, 1e-6f ) );
+}
+
+TEST_CASE( "TensorN non-owning copy-assign shape mismatch throws", "[tensor_n][view]" )
+{
+    std::vector<float> buf( 4 );
+    TensorN<2> v( buf.data(), idx<2>({ 2, 2 }), false );
+    TensorN<2> rhs( idx<2>({ 1, 4 }), 1.f );
+    REQUIRE_THROWS_AS( v = rhs, std::invalid_argument );
+}
+
+TEST_CASE( "TensorN non-owning move-assign throws", "[tensor_n][view]" )
+{
+    std::vector<float> buf( 4 );
+    TensorN<2> v( buf.data(), idx<2>({ 2, 2 }), false );
+    TensorN<2> rhs( idx<2>({ 2, 2 }), 1.f );
+    REQUIRE_THROWS_AS( v = std::move( rhs ), std::invalid_argument );
+}
+
+TEST_CASE( "TensorN elementwiseMultiply throws if non-owning out would resize", "[tensor_n][view]" )
+{
+    std::vector<float> a( 4, 2.f ), b( 4, 3.f ), o( 1, 0.f );
+    TensorN<2> const ta( a.data(), idx<2>({ 2, 2 }), false );
+    TensorN<2> const tb( b.data(), idx<2>({ 2, 2 }), false );
+    TensorN<2> out( o.data(), idx<2>({ 1, 1 }), false );
+    REQUIRE_THROWS_AS( ta.elementwiseMultiply( tb, out ), std::invalid_argument );
+}

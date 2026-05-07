@@ -136,6 +136,14 @@ if(NEURAL_CUDA_FOUND)
 		message(FATAL_ERROR "CUDA is enabled but cuDNN was not found. Set CUDNN_ROOT to the cuDNN installation prefix.")
 	endif()
 	target_compile_definitions(neural_impl_lib PUBLIC NEURAL_CUDNN_ENABLED=1)
+
+	# Nsight Systems / Nsight Compute: embed source line correlation for device code (.cu).
+	# CMake already passes -g for CUDA in Debug / RelWithDebInfo; -lineinfo adds SASS↔source mapping
+	# without full device debug. For cuda-gdb / deepest Nsight device stepping, use -G instead
+	# (much slower and larger binaries).
+	target_compile_options( neural_impl_lib PRIVATE
+		"$<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>>:-lineinfo>"
+	)
 else()
 	target_sources(neural_impl_lib PRIVATE src/cuda/cuda_runtime_stub.cpp)
 	target_compile_definitions(neural_impl_lib PUBLIC NEURAL_CUDA_ENABLED=0)
@@ -153,6 +161,7 @@ target_include_directories(neural_impl_lib PUBLIC
 	include/nn
 	include/optimizer
 	include/app
+	include/refactor
 	image_processing
 )
 target_link_libraries(neural_impl_lib PUBLIC Eigen3::Eigen ${OpenCV_LIBS})
@@ -162,12 +171,30 @@ option(ENABLE_OPENMP "Enable OpenMP" ON)
 if( ENABLE_OPENMP AND OpenMP_CXX_FOUND )
 	message( STATUS "OPENMP enabled" )
 	target_link_libraries( neural_impl_lib PUBLIC OpenMP::OpenMP_CXX )
+	# -fopenmp does not put GCC's omp.h on Clang's search path in compile_commands/clangd.
+	# CMake also omits GCC "builtin" include dirs from propagated INTERFACE_INCLUDE_DIRECTORIES.
+	# Use -idirafter (not -isystem): that dir also holds GCC xmmintrin.h etc.; -isystem makes Clang
+	# prefer those over Clang/CUDA intrinsics and breaks Eigen (e.g. _mm_prefetch conflicts).
+	if( CMAKE_CXX_COMPILER_ID STREQUAL "GNU" )
+		execute_process(
+			COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=include
+			OUTPUT_VARIABLE _NEURAL_GCC_INCLUDE_DIR
+			OUTPUT_STRIP_TRAILING_WHITESPACE
+			RESULT_VARIABLE _NEURAL_GCC_PRINT_RES
+		)
+		if( _NEURAL_GCC_PRINT_RES EQUAL 0 AND EXISTS "${_NEURAL_GCC_INCLUDE_DIR}/omp.h" )
+			get_filename_component( _NEURAL_GCC_INCLUDE_DIR_ABS "${_NEURAL_GCC_INCLUDE_DIR}" ABSOLUTE )
+			target_compile_options( neural_impl_lib PUBLIC
+				"$<$<COMPILE_LANGUAGE:CXX>:SHELL:-idirafter ${_NEURAL_GCC_INCLUDE_DIR_ABS}>"
+			)
+		endif()
+	endif()
 else()
 	message( STATUS "OPENMP DISABLED" )
 endif()
 
 # Main executable (entry point remains src/main.cpp; demos are under src/app/)
-add_executable(neural_implementation src/main.cpp src/app/mnist_demo.cpp src/app/cifar_demo.cpp src/app/conv_demo.cpp src/app/conv_demo_momentum.cpp src/app/conv_demo_cuda.cpp src/app/conv_demo_cuda_small.cpp src/app/conv_demo_cpu_small.cpp)
+add_executable(neural_implementation src/main.cpp src/app/mnist_demo.cpp src/app/cifar_demo.cpp src/app/conv_demo.cpp src/app/conv_demo_momentum.cpp src/app/conv_demo_cuda.cpp src/app/conv_demo_cuda_small.cpp src/app/conv_demo_cpu_small.cpp src/app/conv_demo_refactor.cpp)
 # target_include_directories(neural_implementation PRIVATE ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(neural_implementation PRIVATE neural_impl_lib)
 
@@ -183,10 +210,12 @@ add_executable(tests
     tests/test_cuda_tensor4.cpp
     tests/test_cuda_nn.cpp
     tests/test_convolutional_layer_cuda.cpp
+    tests/test_convolutional_layer2.cpp
     tests/test_conv_net_momentum_dropout_cuda.cpp
     tests/test_sequential_conv_linear_cuda.cpp
     tests/test_cuda_runtime.cpp
     tests/test_linear_layer.cpp
+    tests/test_linear_layer2.cpp
     tests/test_relu_layer.cpp
     tests/test_dropout_layer.cpp
     tests/test_sigmoid_layer.cpp
@@ -198,8 +227,19 @@ add_executable(tests
     tests/test_cross_entropy_pytorch.cpp
     tests/test_conv_backward.cpp
     tests/test_max_pool_layer.cpp
+    tests/test_max_pool_layer2.cpp
     tests/test_batch_norm_1d_layer.cpp
     tests/test_pytorch_reference.cpp
+    tests/test_latch2.cpp
+    tests/test_relu_layer2.cpp
+    tests/test_sigmoid_layer2.cpp
+    tests/test_softmax_layer2.cpp
+    tests/test_dropout_layer2.cpp
+    tests/test_batch_norm_1d_layer2.cpp
+    tests/test_sequential_nn2.cpp
+    tests/test_momentum_sgd2.cpp
+    tests/test_parity_cpu.cpp
+    tests/test_conv_net2.cpp
 )
 target_link_libraries(tests PRIVATE Catch2::Catch2WithMain neural_impl_lib)
 target_include_directories(tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)

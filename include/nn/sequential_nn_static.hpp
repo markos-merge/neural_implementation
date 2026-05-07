@@ -21,13 +21,13 @@
 namespace neural {
 
 template <typename Tensor, typename Loss, typename ... Layers>
-class SequentialNN
+class SequentialNN_static
 {
 	static_assert( TensorLike<Tensor>, "Tensor must be a TensorLike type" );
 	public:
 		using tensor_tuple_t = std::tuple<Layers...>;
 	public:
-		explicit SequentialNN( Layers... layers );
+		explicit SequentialNN_static( Layers... layers );
 
 		Tensor forward( Tensor const &input );
 		Tensor backward( Tensor const &grad_output );
@@ -154,13 +154,13 @@ std::vector<std::pair<std::size_t, std::size_t>> infer_slot_shapes( Tensor const
 } // namespace detail
 //
 template < typename Tensor, typename Loss, typename ...Layers >
-SequentialNN<Tensor, Loss, Layers...>::SequentialNN( Layers... layers )
+SequentialNN_static<Tensor, Loss, Layers...>::SequentialNN_static( Layers... layers )
 	: m_layers( std::forward<Layers>( layers )... )
 {
 }
 
 template < typename Tensor, typename Loss, typename ...Layers >
-void SequentialNN<Tensor, Loss, Layers...>::ensure_buffers( Tensor const &input )
+void SequentialNN_static<Tensor, Loss, Layers...>::ensure_buffers( Tensor const &input )
 {
 	std::vector<std::pair<std::size_t, std::size_t>> const dims = detail::infer_slot_shapes( input, m_layers );
 
@@ -187,7 +187,7 @@ void SequentialNN<Tensor, Loss, Layers...>::ensure_buffers( Tensor const &input 
 }
 
 template < typename Tensor, typename Loss, typename ...Layers >
-void SequentialNN<Tensor, Loss, Layers...>::wire_layers()
+void SequentialNN_static<Tensor, Loss, Layers...>::wire_layers()
 {
 	std::apply(
 	    [this]( auto &... lyr ) {
@@ -203,7 +203,7 @@ void SequentialNN<Tensor, Loss, Layers...>::wire_layers()
 }
 
 template < typename Tensor, typename Loss, typename ...Layers >
-void SequentialNN<Tensor, Loss, Layers...>::runForwardFromInputSlot()
+void SequentialNN_static<Tensor, Loss, Layers...>::runForwardFromInputSlot()
 {
 	std::apply(
 	    [&]( auto &... lyr ) {
@@ -213,7 +213,7 @@ void SequentialNN<Tensor, Loss, Layers...>::runForwardFromInputSlot()
 }
 
 template < typename Tensor, typename Loss, typename ...Layers >
-Tensor SequentialNN<Tensor, Loss, Layers...>::forward( Tensor const &input )
+Tensor SequentialNN_static<Tensor, Loss, Layers...>::forward( Tensor const &input )
 {
 	ensure_buffers( input );
 	*m_slots.front().input() = input;
@@ -223,13 +223,13 @@ Tensor SequentialNN<Tensor, Loss, Layers...>::forward( Tensor const &input )
 
 template < typename Tensor, typename Loss, typename ...Layers >
 template < std::size_t... Is >
-void SequentialNN<Tensor, Loss, Layers...>::backward_reverse_ptr( std::index_sequence<Is...> )
+void SequentialNN_static<Tensor, Loss, Layers...>::backward_reverse_ptr( std::index_sequence<Is...> )
 {
 	(void)( ( std::get<sizeof...( Layers ) - 1 - Is>( m_layers ).backward(), ... ) );
 }
 
 template < typename Tensor, typename Loss, typename ...Layers >
-Tensor SequentialNN<Tensor, Loss, Layers...>::backward( Tensor const &grad_output )
+Tensor SequentialNN_static<Tensor, Loss, Layers...>::backward( Tensor const &grad_output )
 {
 	if ( !m_buffers_ready ) {
 		throw std::logic_error( "SequentialNN::backward: call forward first" );
@@ -240,7 +240,7 @@ Tensor SequentialNN<Tensor, Loss, Layers...>::backward( Tensor const &grad_outpu
 }
 
 template < typename Tensor, typename Loss, typename ...Layers >
-void SequentialNN<Tensor, Loss, Layers...>::ensureBuffersForShape( std::size_t batch_rows,
+void SequentialNN_static<Tensor, Loss, Layers...>::ensureBuffersForShape( std::size_t batch_rows,
                                                                    std::size_t input_cols )
 {
 	Tensor stub( batch_rows, input_cols );
@@ -248,13 +248,13 @@ void SequentialNN<Tensor, Loss, Layers...>::ensureBuffersForShape( std::size_t b
 }
 
 template < typename Tensor, typename Loss, typename ...Layers >
-Tensor &SequentialNN<Tensor, Loss, Layers...>::targetBuffer()
+Tensor &SequentialNN_static<Tensor, Loss, Layers...>::targetBuffer()
 {
 	return m_target;
 }
 
 template < typename Tensor, typename Loss, typename ...Layers >
-typename Tensor::value_type SequentialNN<Tensor, Loss, Layers...>::runTrainStepFromMappedBuffers()
+typename Tensor::value_type SequentialNN_static<Tensor, Loss, Layers...>::runTrainStepFromMappedBuffers()
 {
 	if ( !m_buffers_ready ) {
 		throw std::logic_error( "SequentialNN::trainStep: buffers not ready; call ensureBuffersForShape or forward first" );
@@ -276,13 +276,13 @@ typename Tensor::value_type SequentialNN<Tensor, Loss, Layers...>::runTrainStepF
 }
 
 template < typename Tensor, typename Loss, typename ...Layers >
-typename Tensor::value_type SequentialNN<Tensor, Loss, Layers...>::trainStep()
+typename Tensor::value_type SequentialNN_static<Tensor, Loss, Layers...>::trainStep()
 {
 	return runTrainStepFromMappedBuffers();
 }
 
 template < typename Tensor, typename Loss, typename ...Layers >
-typename Tensor::value_type SequentialNN<Tensor, Loss, Layers...>::trainStep( Tensor const &input,
+typename Tensor::value_type SequentialNN_static<Tensor, Loss, Layers...>::trainStep( Tensor const &input,
                                                                               Tensor const &target )
 {
 	ensure_buffers( input );
@@ -293,14 +293,14 @@ typename Tensor::value_type SequentialNN<Tensor, Loss, Layers...>::trainStep( Te
 
 template < typename Tensor, typename Loss, typename ...Layers >
 template < typename UnaryOp >
-void SequentialNN<Tensor, Loss, Layers...>::forEachLayer( UnaryOp &&op )
+void SequentialNN_static<Tensor, Loss, Layers...>::forEachLayer( UnaryOp &&op )
 {
 	std::apply( [&op]( auto &&...args ) { (op( args ), ...); }, m_layers );
 }
 
 template < typename Tensor, typename Loss, typename ...Layers >
 template < typename Tuple, typename F >
-void SequentialNN<Tensor, Loss, Layers...>::forEachLayerZip( Tuple &zip_tuple, F &&f )
+void SequentialNN_static<Tensor, Loss, Layers...>::forEachLayerZip( Tuple &zip_tuple, F &&f )
 {
 	std::apply(
 	    [&f, &zip_tuple]( auto &...layer_args ) {
@@ -314,7 +314,7 @@ void SequentialNN<Tensor, Loss, Layers...>::forEachLayerZip( Tuple &zip_tuple, F
 }
 
 template < typename Tensor, typename Loss, typename ...Layers >
-LatchLayer<Tensor> &SequentialNN<Tensor, Loss, Layers...>::inputLatch()
+LatchLayer<Tensor> &SequentialNN_static<Tensor, Loss, Layers...>::inputLatch()
 {
 	if ( !m_buffers_ready || m_slots.empty() ) {
 		throw std::logic_error( "SequentialNN::inputLatch: buffers not ready" );
@@ -323,7 +323,7 @@ LatchLayer<Tensor> &SequentialNN<Tensor, Loss, Layers...>::inputLatch()
 }
 
 template < typename Tensor, typename Loss, typename ...Layers >
-LatchLayer<Tensor> const &SequentialNN<Tensor, Loss, Layers...>::inputLatch() const
+LatchLayer<Tensor> const &SequentialNN_static<Tensor, Loss, Layers...>::inputLatch() const
 {
 	if ( !m_buffers_ready || m_slots.empty() ) {
 		throw std::logic_error( "SequentialNN::inputLatch: buffers not ready" );
@@ -332,7 +332,7 @@ LatchLayer<Tensor> const &SequentialNN<Tensor, Loss, Layers...>::inputLatch() co
 }
 
 template < typename Tensor, typename Loss, typename ...Layers >
-LatchLayer<Tensor> &SequentialNN<Tensor, Loss, Layers...>::outputLatch()
+LatchLayer<Tensor> &SequentialNN_static<Tensor, Loss, Layers...>::outputLatch()
 {
 	if ( !m_buffers_ready || m_slots.empty() ) {
 		throw std::logic_error( "SequentialNN::outputLatch: buffers not ready" );
@@ -341,7 +341,7 @@ LatchLayer<Tensor> &SequentialNN<Tensor, Loss, Layers...>::outputLatch()
 }
 
 template < typename Tensor, typename Loss, typename ...Layers >
-LatchLayer<Tensor> const &SequentialNN<Tensor, Loss, Layers...>::outputLatch() const
+LatchLayer<Tensor> const &SequentialNN_static<Tensor, Loss, Layers...>::outputLatch() const
 {
 	if ( !m_buffers_ready || m_slots.empty() ) {
 		throw std::logic_error( "SequentialNN::outputLatch: buffers not ready" );
@@ -350,19 +350,19 @@ LatchLayer<Tensor> const &SequentialNN<Tensor, Loss, Layers...>::outputLatch() c
 }
 
 template < typename Tensor, typename Loss, typename ...Layers >
-TerminalLatchLayer<Tensor> const &SequentialNN<Tensor, Loss, Layers...>::inputTerminalLatch() const
+TerminalLatchLayer<Tensor> const &SequentialNN_static<Tensor, Loss, Layers...>::inputTerminalLatch() const
 {
 	return m_input_terminal;
 }
 
 template < typename Tensor, typename Loss, typename ...Layers >
-TerminalLatchLayer<Tensor> const &SequentialNN<Tensor, Loss, Layers...>::outputTerminalLatch() const
+TerminalLatchLayer<Tensor> const &SequentialNN_static<Tensor, Loss, Layers...>::outputTerminalLatch() const
 {
 	return m_output_terminal;
 }
 
 template < typename Tensor, typename ... Layers >
-using SequentialNNMSE = SequentialNN<Tensor, MSELoss<Tensor>, Layers...>;
+using SequentialNNMSE = SequentialNN_static<Tensor, MSELoss<Tensor>, Layers...>;
 
 } // namespace neural
 

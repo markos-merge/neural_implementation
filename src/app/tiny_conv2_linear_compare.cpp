@@ -27,7 +27,7 @@ int main( int argc, char **argv )
 
 #else
 
-#include "convolutional_box.hpp"
+#include "convolutional_box_static.hpp"
 #include "convolutional_layer.hpp"
 #include "cross_entropy_softmax_loss.hpp"
 #include "cuda_tensor.hpp"
@@ -37,7 +37,7 @@ int main( int argc, char **argv )
 #include "neural_cuda_runtime.hpp"
 #include "relu_layer.hpp"
 #include "sgd_optimizer.hpp"
-#include "sequential_nn.hpp"
+#include "sequential_nn_static.hpp"
 #include "tensor.hpp"
 #include <cuda_runtime_api.h>
 
@@ -88,12 +88,12 @@ void append_he( std::vector<float> &buf, std::size_t n, std::size_t fan_in, std:
 	}
 }
 
-using TinyBox = neural::ConvolutionalBox<
+using TinyBox = neural::ConvolutionalBox_static<
     TensorN_t, Tensor2D_t,
     neural::ConvolutionalLayer<TensorN_t>, neural::ReLULayer<TensorN_t>,
     neural::ConvolutionalLayer<TensorN_t>, neural::ReLULayer<TensorN_t>>;
 
-using TinyNN = neural::SequentialNN<
+using TinyNN = neural::SequentialNN_static<
     Tensor2D_t, neural::SoftmaxCrossEntropyLoss<Tensor2D_t>, TinyBox,
     neural::LinearLayer<Tensor2D_t>>;
 

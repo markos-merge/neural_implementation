@@ -1,9 +1,10 @@
 {
 	"cmake.copyCompileCommands": "${workspaceFolder}/compile_commands.json",
+	"clangd.arguments": ["--background-index=false"],
 	"C_Cpp.intelliSenseEngine": "disabled",
 	"cmake.useCMakePresets": "always",
-	"cmake.configurePreset": "release",
-	"cmake.buildPreset": "release",
+	"cmake.configurePreset": "release-cuda",
+	"cmake.buildPreset": "release-cuda",
 	"cmake.generator": "Ninja",
 	"cmake.buildBeforeRun": true,
 	"cmake.buildTask": false,
