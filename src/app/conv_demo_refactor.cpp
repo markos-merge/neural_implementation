@@ -29,6 +29,7 @@ void run_conv_demo_refactor()
 #include <cuda_runtime.h>
 #include <omp.h>
 #include <cstddef>
+#include <array>
 #include <filesystem>
 #include <iomanip>
 #include <memory>
@@ -62,19 +63,21 @@ SequentialNN2<float, Cuda> build_network()
 	SequentialNN2<float, Cuda> nn;
 
 	// Block 1 — entry point; reshapes flat [N, 3*32*32] → [N, 3, 32, 32]
-	nn.addLayer( ConvolutionalLayer<float, Cuda>( 32, 3, { 3, 32, 32 } ) );
+	constexpr std::size_t kPadSameK3 = 1;
+	nn.addLayer( ConvolutionalLayer<float, Cuda>(
+	    32, 3, std::array<std::size_t, 3>{ 3, 32, 32 }, kPadSameK3, kPadSameK3 ) );
 	nn.addLayer( BatchNormLayer<float, Cuda>() );
 	nn.addLayer( ReLULayer<float, Cuda>() );
 	nn.addLayer( MaxPoolLayer<float, Cuda>( 2, 2 ) );
 
 	// Block 2
-	nn.addLayer( ConvolutionalLayer<float, Cuda>( 64, 3 ) );
+	nn.addLayer( ConvolutionalLayer<float, Cuda>( 64, 3, kPadSameK3, kPadSameK3 ) );
 	nn.addLayer( BatchNormLayer<float, Cuda>() );
 	nn.addLayer( ReLULayer<float, Cuda>() );
 	nn.addLayer( MaxPoolLayer<float, Cuda>( 2, 2 ) );
 
 	// Block 3
-	nn.addLayer( ConvolutionalLayer<float, Cuda>( 128, 3 ) );
+	nn.addLayer( ConvolutionalLayer<float, Cuda>( 128, 3, kPadSameK3, kPadSameK3 ) );
 	nn.addLayer( BatchNormLayer<float, Cuda>() );
 	nn.addLayer( ReLULayer<float, Cuda>() );
 	nn.addLayer( MaxPoolLayer<float, Cuda>( 2, 2 ) );

@@ -45,8 +45,12 @@ public:
 	// Shape of the output slot.
 	std::vector<std::size_t> outputShape() const;
 
+	std::size_t numLayers() const noexcept { return m_layers.size(); }
+
 	template <typename F>
 	void forEachLayer( F &&f );
+
+	void clear();
 
 private:
 	std::vector<Layer<T, Device>>      m_layers;
@@ -146,6 +150,14 @@ void SequentialNN2<T, Device>::forEachLayer( F &&f )
 {
 	for ( auto &l : m_layers )
 		std::visit( std::forward<F>( f ), l );
+}
+
+template <typename T, typename Device>
+void SequentialNN2<T, Device>::clear()
+{
+	m_layers.clear();
+	m_fwd_slots.clear();
+	m_grad_slots.clear();
 }
 
 } // namespace refactor

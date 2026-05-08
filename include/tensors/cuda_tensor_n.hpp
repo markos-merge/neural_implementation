@@ -262,10 +262,10 @@ class CudaTensor4 : public CudaTensorNBase<4, T>
 		// ----------------------------------------------------------------
 		// cuDNN — convolution forward
 		//
-		// Stride 1, fixed height/width padding 1 in \c cudnnSetConvolution2dDescriptor
-		// (typical 3×3 "same" geometry). \p im2col_tensor is not written here. \p gemm_cnhw_layout
-		// unused (API parity). CPU im2col uses valid-style geometry; paths differ unless both are
-		// aligned to the same padding.
+		// Stride 1, dilation 1, \c CUDNN_CROSS_CORRELATION. Padding defaults to \f$K_h/2,\,K_w/2\f$
+		// (odd \f$K\f$) when \p cudnn_pad_h / \p cudnn_pad_w are \c -1; otherwise those values are
+		// passed to \c cudnnSetConvolution2dDescriptor. \p im2col_tensor is not written here.
+		// \p gemm_cnhw_layout unused (API parity).
 		// ----------------------------------------------------------------
 
 		/// Intentionally not implemented on device; use another path if you need im2col.
@@ -279,7 +279,8 @@ class CudaTensor4 : public CudaTensorNBase<4, T>
 		                        CudaTensor4<T> &output,
 		                        CudaTensor4<T> &gemm_cnhw_layout,
 		                        void **cudnn_workspace_cache = nullptr,
-		                        std::size_t *cudnn_workspace_capacity_bytes = nullptr );
+		                        std::size_t *cudnn_workspace_capacity_bytes = nullptr,
+		                        int cudnn_pad_h = -1, int cudnn_pad_w = -1 );
 
 		// ----------------------------------------------------------------
 		// cuDNN — bias broadcast  {1,C,1,1} + {N,C,H,W}
@@ -996,7 +997,8 @@ void CudaTensor4<T>::im2ColConvolution( CudaTensor4<T> const &kernel,
                                         CudaTensor4<T> &output,
                                         CudaTensor4<T> &gemm_cnhw_layout,
                                         void **cudnn_workspace_cache,
-                                        std::size_t *cudnn_workspace_capacity_bytes )
+                                        std::size_t *cudnn_workspace_capacity_bytes,
+                                        int cudnn_pad_h, int cudnn_pad_w )
 {
 	CudaStreamSyncOnExit const _cuda_stream_sync;
 	(void)gemm_cnhw_layout;
@@ -1010,6 +1012,12 @@ void CudaTensor4<T>::im2ColConvolution( CudaTensor4<T> const &kernel,
 		if ( ( Kh % 2 ) == 0 || ( Kw % 2 ) == 0 ) {
 			throw std::invalid_argument(
 			    "CudaTensor4::im2ColConvolution: cuDNN path requires odd kernel height and width" );
+		}
+
+		int const pad_h_int = cudnn_pad_h < 0 ? static_cast<int>( Kh / 2 ) : cudnn_pad_h;
+		int const pad_w_int = cudnn_pad_w < 0 ? static_cast<int>( Kw / 2 ) : cudnn_pad_w;
+		if ( pad_h_int < 0 || pad_w_int < 0 ) {
+			throw std::invalid_argument( "CudaTensor4::im2ColConvolution: padding must be >= 0" );
 		}
 
 		cudnnHandle_t &handle = CudnnHandle::instance();
@@ -1031,8 +1039,9 @@ void CudaTensor4<T>::im2ColConvolution( CudaTensor4<T> const &kernel,
 		}
 
 		detail::CudnnConvDesc conv_desc;
-		st = cudnnSetConvolution2dDescriptor( conv_desc.desc, 1, 1, 1, 1, 1, 1,
-		                                        CUDNN_CROSS_CORRELATION, CUDNN_DATA_FLOAT );
+		st = cudnnSetConvolution2dDescriptor(
+		    conv_desc.desc, pad_h_int, pad_w_int, 1, 1, 1, 1, CUDNN_CROSS_CORRELATION,
+		    CUDNN_DATA_FLOAT );
 		if ( st != CUDNN_STATUS_SUCCESS ) {
 			throw std::runtime_error( "cudnnSetConvolution2dDescriptor failed" );
 		}
@@ -1346,7 +1355,8 @@ void batch_norm_backward_nchw( CudaTensor4<T> const &grad_wrt_output,
 	}
 }
 
-/// cuDNN conv backward (matches forward: padding 1,1, stride 1, \c CUDNN_CROSS_CORRELATION, odd \f$K_h,K_w\f$).
+/// cuDNN conv backward (matches forward: stride 1, \c CUDNN_CROSS_CORRELATION, odd \f$K_h,K_w\f$;
+/// padding from \p cudnn_pad_h / \p cudnn_pad_w or \f$K_h/2,\,K_w/2\f$ when negative).
 /// \param grad_wrt_output_nchw  \(\partial L/\partial y\) (\c LayerBase::getGradInput()).
 /// \param weights               \(W\) (read-only).
 /// \param input_activations     \(x\) from forward (\c getInput()).
@@ -1354,11 +1364,13 @@ void batch_norm_backward_nchw( CudaTensor4<T> const &grad_wrt_output,
 /// \param grad_bias_rank4       \(\partial L/\partial b\), shape \c {1,C_out,1,1}.
 /// \param grad_wrt_input_nchw \(\partial L/\partial x\) (\c getGradOutput()), resized to \p input_activations.shape() if needed.
 template <typename T>
-void convolutional_backward_cudnn( CudaTensor4<T> &grad_wrt_output_nchw, CudaTensor4<T> &weights,
-                                   CudaTensor4<T> const &input_activations, CudaTensor4<T> &grad_weights,
-                                   CudaTensor4<T> &grad_bias_rank4, CudaTensor4<T> &grad_wrt_input_nchw,
-                                   void **cudnn_workspace_cache = nullptr,
-                                   std::size_t *cudnn_workspace_capacity_bytes = nullptr )
+void convolutional_backward_cudnn(
+    CudaTensor4<T> &grad_wrt_output_nchw, CudaTensor4<T> &weights,
+    CudaTensor4<T> const &input_activations, CudaTensor4<T> &grad_weights,
+    CudaTensor4<T> &grad_bias_rank4, CudaTensor4<T> &grad_wrt_input_nchw,
+    void **cudnn_workspace_cache = nullptr,
+    std::size_t *cudnn_workspace_capacity_bytes = nullptr, int cudnn_pad_h = -1,
+    int cudnn_pad_w = -1 )
 {
 	CudaStreamSyncOnExit const _cuda_stream_sync;
 	if constexpr ( !std::is_same_v<T, float> ) {
@@ -1368,6 +1380,12 @@ void convolutional_backward_cudnn( CudaTensor4<T> &grad_wrt_output_nchw, CudaTen
 		if ( ( ks[2] % 2 ) == 0 || ( ks[3] % 2 ) == 0 ) {
 			throw std::invalid_argument(
 			    "convolutional_backward_cudnn: odd kernel height and width required (same as forward)" );
+		}
+
+		int const pad_h_int = cudnn_pad_h < 0 ? static_cast<int>( ks[2] / 2 ) : cudnn_pad_h;
+		int const pad_w_int = cudnn_pad_w < 0 ? static_cast<int>( ks[3] / 2 ) : cudnn_pad_w;
+		if ( pad_h_int < 0 || pad_w_int < 0 ) {
+			throw std::invalid_argument( "convolutional_backward_cudnn: padding must be >= 0" );
 		}
 		if ( grad_weights.shape() != ks ) {
 			throw std::invalid_argument(
@@ -1442,8 +1460,9 @@ void convolutional_backward_cudnn( CudaTensor4<T> &grad_wrt_output_nchw, CudaTen
 		}
 
 		detail::CudnnConvDesc conv_desc;
-		st = cudnnSetConvolution2dDescriptor( conv_desc.desc, 1, 1, 1, 1, 1, 1,
-		                                        CUDNN_CROSS_CORRELATION, CUDNN_DATA_FLOAT );
+		st = cudnnSetConvolution2dDescriptor(
+		    conv_desc.desc, pad_h_int, pad_w_int, 1, 1, 1, 1, CUDNN_CROSS_CORRELATION,
+		    CUDNN_DATA_FLOAT );
 		if ( st != CUDNN_STATUS_SUCCESS ) {
 			throw std::runtime_error( "cudnnSetConvolution2dDescriptor failed" );
 		}

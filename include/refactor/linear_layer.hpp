@@ -19,6 +19,7 @@ class LinearLayer : public LayerBase<T, Device>
 {
 public:
 	explicit LinearLayer( std::size_t out_features );
+	LinearLayer( T *weights, std::size_t in_features, std::size_t out_features, T *bias );
 
 	std::size_t outFeatures() const;
 
@@ -49,6 +50,16 @@ private:
 template <typename T, typename Device>
 LinearLayer<T, Device>::LinearLayer( std::size_t out_features )
 	: m_out_features( out_features )
+{
+}
+
+template <typename T, typename Device>
+LinearLayer<T, Device>::LinearLayer( T *weights, std::size_t in_features, std::size_t out_features, T *bias )
+	: m_out_features( out_features )
+	, m_weights( weights, in_features, out_features, true )
+	, m_grad_weights( in_features, out_features )
+	, m_bias( bias, out_features, 1, true )
+	, m_grad_bias( out_features, 1 )
 {
 }
 

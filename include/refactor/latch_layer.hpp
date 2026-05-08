@@ -120,8 +120,14 @@ std::vector<std::size_t> const& LatchLayer<T, Cuda>::shape() const
 template <typename T>
 void LatchLayer<T, Cuda>::resize(std::vector<std::size_t> const& s)
 {
-	std::size_t const size = std::accumulate(s.begin(), s.end(), 1, std::multiplies<std::size_t>());
-	std::size_t const prv_size = std::accumulate(m_shape.begin(), m_shape.end(), 1, std::multiplies<std::size_t>());
+	std::size_t const size = std::accumulate(s.begin(), s.end(), std::size_t{ 1 },
+	                                          std::multiplies<std::size_t>());
+	// Empty m_shape: accumulate returns initial value only (legacy had prv_size == 1 for "no prior
+	// buffer", which skipped cudaMalloc when the first resize was e.g. 1×1).
+	std::size_t const prv_size = m_shape.empty()
+	                                     ? std::size_t{}
+	                                     : std::accumulate(m_shape.begin(), m_shape.end(),
+	                                                       std::size_t{ 1 }, std::multiplies<std::size_t>());
 	m_shape = s;
 	if ( prv_size != size ) {
 		if ( m_fwd != nullptr ) {

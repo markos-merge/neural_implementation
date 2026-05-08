@@ -51,7 +51,8 @@ TEST_CASE( "Conv+ReLU+Linear forward: finite output and correct shape",
 	constexpr std::size_t out_classes = 4;
 
 	SequentialNN2<float, Cpu> nn;
-	nn.addLayer( ConvolutionalLayer<float, Cpu>( 4, 3, { C, H, W } ) );
+	nn.addLayer(
+	    ConvolutionalLayer<float, Cpu>( 4, 3, std::array<std::size_t, 3>{ C, H, W }, 0, 0 ) );
 	nn.addLayer( ReLULayer<float, Cpu>() );
 	nn.addLayer( LinearLayer<float, Cpu>( out_classes ) );
 	nn.wire();
@@ -80,7 +81,8 @@ TEST_CASE( "Conv+ReLU+MaxPool+Linear forward+backward runs without crash",
 	constexpr std::size_t out_classes = 3;
 
 	SequentialNN2<float, Cpu> nn;
-	nn.addLayer( ConvolutionalLayer<float, Cpu>( 4, 3, { C, H, W } ) );
+	nn.addLayer(
+	    ConvolutionalLayer<float, Cpu>( 4, 3, std::array<std::size_t, 3>{ C, H, W }, 0, 0 ) );
 	nn.addLayer( ReLULayer<float, Cpu>() );
 	nn.addLayer( MaxPoolLayer<float, Cpu>( 2, 2 ) );
 	nn.addLayer( LinearLayer<float, Cpu>( out_classes ) );
@@ -113,7 +115,8 @@ TEST_CASE( "SGDOptimizer step on Conv+Linear: output stays finite",
 	constexpr std::size_t out_classes = 3;
 
 	SequentialNN2<float, Cpu> nn;
-	nn.addLayer( ConvolutionalLayer<float, Cpu>( 4, 3, { C, H, W } ) );
+	nn.addLayer(
+	    ConvolutionalLayer<float, Cpu>( 4, 3, std::array<std::size_t, 3>{ C, H, W }, 0, 0 ) );
 	nn.addLayer( ReLULayer<float, Cpu>() );
 	nn.addLayer( LinearLayer<float, Cpu>( out_classes ) );
 	nn.wire();
@@ -145,7 +148,8 @@ TEST_CASE( "Conv+BN+ReLU+MaxPool+Linear SGD 10 steps: stays finite",
 	constexpr std::size_t out_classes = 4;
 
 	SequentialNN2<float, Cpu> nn;
-	nn.addLayer( ConvolutionalLayer<float, Cpu>( 8, 3, { C, H, W } ) );
+	nn.addLayer(
+	    ConvolutionalLayer<float, Cpu>( 8, 3, std::array<std::size_t, 3>{ C, H, W }, 0, 0 ) );
 	nn.addLayer( BatchNormLayer<float, Cpu>() );
 	nn.addLayer( ReLULayer<float, Cpu>() );
 	nn.addLayer( MaxPoolLayer<float, Cpu>( 2, 2 ) );
@@ -180,7 +184,8 @@ TEST_CASE( "MomentumSGD on Conv+ReLU+MaxPool+Linear: 10 steps stay finite",
 	constexpr std::size_t out_classes = 3;
 
 	SequentialNN2<float, Cpu> nn;
-	nn.addLayer( ConvolutionalLayer<float, Cpu>( 4, 3, { C, H, W } ) );
+	nn.addLayer(
+	    ConvolutionalLayer<float, Cpu>( 4, 3, std::array<std::size_t, 3>{ C, H, W }, 0, 0 ) );
 	nn.addLayer( ReLULayer<float, Cpu>() );
 	nn.addLayer( MaxPoolLayer<float, Cpu>( 2, 2 ) );
 	nn.addLayer( LinearLayer<float, Cpu>( out_classes ) );
@@ -215,10 +220,11 @@ TEST_CASE( "Two-stage conv net: output shape is correct", "[conv_net2][cpu][mult
 	constexpr std::size_t out_f       = 5;
 
 	SequentialNN2<float, Cpu> nn;
-	nn.addLayer( ConvolutionalLayer<float, Cpu>( 4, 3, { C, H, W } ) );
+	nn.addLayer(
+	    ConvolutionalLayer<float, Cpu>( 4, 3, std::array<std::size_t, 3>{ C, H, W }, 0, 0 ) );
 	nn.addLayer( ReLULayer<float, Cpu>() );
 	nn.addLayer( MaxPoolLayer<float, Cpu>( 2, 2 ) );
-	nn.addLayer( ConvolutionalLayer<float, Cpu>( 8, 3 ) );
+	nn.addLayer( ConvolutionalLayer<float, Cpu>( 8, 3, 0, 0 ) );
 	nn.addLayer( ReLULayer<float, Cpu>() );
 	nn.addLayer( MaxPoolLayer<float, Cpu>( 2, 2 ) );
 	nn.addLayer( LinearLayer<float, Cpu>( out_f ) );

@@ -43,6 +43,11 @@ class BatchNormLayer : public LayerBase<T, Device>
 {
 public:
 	explicit BatchNormLayer( T eps = T( 1e-5 ), T momentum = T( 0.1 ) );
+	BatchNormLayer( T *gamma, T *beta, T *running_mean, T *running_var, std::size_t num_features,
+	                T eps, T momentum ); // todo: implement
+
+	T eps() const noexcept { return m_eps; }
+	T momentum() const noexcept { return m_momentum; }
 
 	std::size_t numFeatures() const noexcept;
 
@@ -55,6 +60,12 @@ public:
 	T *getGradWeights() noexcept { return m_grad_gamma.data(); }
 	T *getBias() noexcept { return m_beta.data(); }
 	T *getGradBias() noexcept { return m_grad_beta.data(); }
+
+	T *runningMeanPtr() noexcept { return m_running_mean.data(); }
+	T *runningVarPtr() noexcept { return m_running_var.data(); }
+
+	/// Mean/variance blobs to serialize: EMA buffers when populated (training), otherwise \ref runningMeanPtr().
+	void checkpointRunningStatsPtrs( T const **out_mean, T const **out_var ) const noexcept;
 
 	std::size_t numWeightParams() const noexcept { return m_gamma.size(); }
 	std::size_t numBiasParams() const noexcept { return m_beta.size(); }
@@ -85,6 +96,41 @@ BatchNormLayer<T, Device>::BatchNormLayer( T eps, T momentum )
 	: m_eps( eps )
 	, m_momentum( momentum )
 {
+}
+
+template <typename T, typename Device>
+BatchNormLayer<T, Device>::BatchNormLayer( T *gamma, T *beta, T *running_mean, T *running_var, std::size_t num_features, T eps, T momentum )
+	: m_eps( eps )
+	, m_momentum( momentum )
+	, m_gamma( gamma, std::array<std::size_t, 4>{ 1, num_features, 1, 1 }, true )
+	, m_beta( beta, std::array<std::size_t, 4>{ 1, num_features, 1, 1 }, true )
+	, m_running_mean( running_mean, std::array<std::size_t, 4>{ 1, num_features, 1, 1 }, true )
+	, m_running_var( running_var, std::array<std::size_t, 4>{ 1, num_features, 1, 1 }, true )
+{
+	m_last_running_mean = tensor_t( m_running_mean );
+	m_last_running_var  = tensor_t( m_running_var );
+}
+
+template <typename T, typename Device>
+void BatchNormLayer<T, Device>::checkpointRunningStatsPtrs( T const **out_mean,
+                                                            T const **out_var ) const noexcept
+{
+	if ( out_mean == nullptr || out_var == nullptr ) {
+		return;
+	}
+	std::size_t const C = numFeatures();
+	if ( C == 0U || m_gamma.size() == 0U ) {
+		*out_mean = nullptr;
+		*out_var  = nullptr;
+		return;
+	}
+	if ( m_last_running_mean.size() == C && m_last_running_var.size() == C ) {
+		*out_mean = m_last_running_mean.data();
+		*out_var  = m_last_running_var.data();
+	} else {
+		*out_mean = m_running_mean.data();
+		*out_var  = m_running_var.data();
+	}
 }
 
 template <typename T, typename Device>
@@ -130,6 +176,16 @@ void BatchNormLayer<T, Device>::forward()
 		std::array<std::size_t, 4> const beta_shape{ 1, C, 1, 1 };
 		m_beta               = tensor_t( beta_shape, static_cast<value_type>( 0 ) );
 		is_first_forward     = true;
+	}
+
+	if ( m_last_running_mean.size() != C ) {
+		std::array<std::size_t, 4> const last_running_mean_shape{ 1, C, 1, 1 };
+		m_last_running_mean = tensor_t( last_running_mean_shape );
+	}
+
+	if ( m_last_running_var.size() != C ) {
+		std::array<std::size_t, 4> const last_running_var_shape{ 1, C, 1, 1 };
+		m_last_running_var = tensor_t( last_running_var_shape );
 	}
 
 	std::vector<std::size_t> const in_logical = in_latch->shape();

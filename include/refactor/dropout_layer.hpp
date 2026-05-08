@@ -31,6 +31,8 @@ public:
 	bool training()                 const noexcept;
 	void setRngSeed( std::uint32_t seed );
 
+	std::uint32_t rngSeed() const noexcept { return m_seed; }
+
 	void forward();
 	void backward();
 

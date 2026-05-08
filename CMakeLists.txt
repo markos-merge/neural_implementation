@@ -194,7 +194,7 @@ else()
 endif()
 
 # Main executable (entry point remains src/main.cpp; demos are under src/app/)
-add_executable(neural_implementation src/main.cpp src/app/mnist_demo.cpp src/app/cifar_demo.cpp src/app/conv_demo.cpp src/app/conv_demo_momentum.cpp src/app/conv_demo_cuda.cpp src/app/conv_demo_cuda_small.cpp src/app/conv_demo_cpu_small.cpp src/app/conv_demo_refactor.cpp)
+add_executable(neural_implementation src/main.cpp src/app/mnist_demo.cpp src/app/cifar_demo.cpp src/app/conv_demo.cpp src/app/conv_demo_momentum.cpp src/app/conv_demo_cuda.cpp src/app/conv_demo_cuda_small.cpp src/app/conv_demo_cpu_small.cpp src/app/conv_demo_refactor.cpp src/app/conv_demo_refactor_ckpt.cpp)
 # target_include_directories(neural_implementation PRIVATE ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(neural_implementation PRIVATE neural_impl_lib)
 
@@ -240,6 +240,7 @@ add_executable(tests
     tests/test_momentum_sgd2.cpp
     tests/test_parity_cpu.cpp
     tests/test_conv_net2.cpp
+    tests/test_nn_serializer.cpp
 )
 target_link_libraries(tests PRIVATE Catch2::Catch2WithMain neural_impl_lib)
 target_include_directories(tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
